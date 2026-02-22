@@ -1,0 +1,131 @@
+[project]
+name = "croupier"
+version = "0.1.0"
+description = "Croupier is a receipt printing microservice."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Hasan Sezer Taşan", email = "hasansezertasan@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+  "fastapi[standard]==0.129.2",
+  "faststream[rabbit]==0.6.6",
+  "python-escpos==3.1",
+]
+
+
+[dependency-groups]
+dev = [
+  "bandit==1.9.3",
+  "pyrefly==0.53.0",
+  "pytest-asyncio>=1.1.0",
+  "pytest~=9.0.2",
+  "pyupgrade-directories==0.3.0",
+  "ruff==0.15.2",
+  "taplo==0.9.3",
+  "testcontainers==4.14.1",
+  "typos==1.43.5",
+  "validate-pyproject[all]==0.25.0",
+  "vulture==2.14",
+  "zuban==0.6.0",
+]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.uv]
+add-bounds = "exact"
+
+
+[tool.ruff]
+fix = true
+output-format = "full"
+preview = true
+show-fixes = true
+src = ["src", "tests"]
+target-version = "py314"
+unsafe-fixes = true
+
+
+[tool.ruff.analyze]
+detect-string-imports = true
+preview = true
+
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+preview = true
+
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+ignore = ["COM812", "CPY", "D", "DOC"]
+logger-objects = ["logging_setup.logger"]
+preview = true
+select = ["ALL"]
+
+
+[tool.ruff.lint.per-file-ignores]
+"./tests/**/*.py" = ["S101", "SLF001", "PLR2004", "PLR6301"]
+
+
+[tool.ruff.lint.pyupgrade]
+keep-runtime-typing = true
+
+
+[tool.ruff.lint.pycodestyle]
+ignore-overlong-task-comments = true
+
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+
+[tool.ruff.lint.ruff]
+parenthesize-tuple-in-subscript = true
+
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+
+[tool.pyrefly]
+python-version = "3.14"
+
+
+[tool.vulture]
+exclude = ["*/.venv/*.py"]
+ignore_names = [
+  "cls",
+  "init_settings",
+  "env_settings",
+  "dotenv_settings",
+  "file_secret_settings",
+]
+min_confidence = 80
+paths = ["src", "tests"]
+sort_by_size = true
+
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+
+
+[tool.typos.default.extend-words]
+cpy = "cpy"
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

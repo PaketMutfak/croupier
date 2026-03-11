@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -47,7 +45,6 @@ class Settings(BaseSettings):
 
 class Message(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
-    id: str
     content: bytes
     network_host: str
     network_timeout: int

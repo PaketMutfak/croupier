@@ -1,0 +1,10 @@
+{
+  "include": [
+    "src",
+    "apps"
+  ],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "standard",
+  "venv": ".venv",
+  "venvPath": "."
+}

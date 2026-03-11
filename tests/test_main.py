@@ -15,7 +15,6 @@ from croupier.main import settings
 @pytest.fixture
 def sample_message() -> Message:
     return Message(
-        id="test-123",
         content=b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00",
         network_host="192.168.1.100",
         network_timeout=10,

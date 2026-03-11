@@ -44,39 +44,3 @@ Then, in a separate terminal, publish a test receipt:
 ```bash
 uv run demo.py
 ```
-
-## Tasks
-
-The commands below can also be executed using the [xc task runner](https://xcfile.dev/), which combines the usage instructions with the actual commands. Simply run `xc`, it will popup an interactive menu with all available tasks.
-
-### `install`
-
-Install the dependencies and/or ensure project virtualenv is up to date.
-
-run: once
-
-```sh
-uv sync
-```
-
-### `ci`
-
-Requires: install
-
-Run Linters, Formatters, Type Checkers, and Tests.
-
-```sh
-uv run validate-pyproject pyproject.toml
-uv run typos
-uv run bandit -c pyproject.toml -r ./src ./tests
-uv run pyup-dirs --py314-plus recursive src tests
-uv run taplo lint pyproject.toml
-uv run taplo format pyproject.toml
-uv run ruff check
-uv run ruff format
-uv run pyrefly check
-uv run zuban check
-uv run zuban mypy
-uv run vulture
-uv run pytest
-```

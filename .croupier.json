@@ -1,5 +1,5 @@
 {
     "queue_url": "amqp://guest:guest@127.0.0.1",
     "exchange_name": "receipt.dispatch",
-    "queue_name": "receipt.dispatch.yenimahalle-branch"
+    "queue_name": "receipt.dispatch"
 }

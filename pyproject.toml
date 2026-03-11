@@ -97,6 +97,7 @@ force-single-line = true
 [tool.ruff.lint.mccabe]
 max-complexity = 12
 
+
 [tool.ty.src]
 include = ["src", "tests"]
 respect-ignore-files = false

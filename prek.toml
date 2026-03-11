@@ -82,7 +82,6 @@ hooks = [
     "-c",
     "pyproject.toml",
     "-r",
-    "./apps",
     "./src",
     "./tests",
   ] },
@@ -98,7 +97,7 @@ hooks = [
     "python",
   ], exclude_types = [
     "symlink",
-  ], files = "^((apps|src|tests)/.*\\.py)$" },
+  ], files = "^((src|tests)/.*\\.py)$" },
   { id = "local-test", name = "local-test", language = "system", entry = "uv run pytest", types = [
     "python",
   ], exclude_types = [

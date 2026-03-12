@@ -1,0 +1,7 @@
+[env]
+_.file = '.env'
+
+
+[tools]
+prek = "latest"
+uv = "latest"

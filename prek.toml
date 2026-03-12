@@ -1,0 +1,106 @@
+#:schema: https://www.schemastore.org/prek.json
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+default_language_version.python = "3.14"
+exclude.glob = [".devcontainer/**", ".vscode/**"]
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-json" },
+  { id = "check-json5" },
+  { id = "check-merge-conflict" },
+  { id = "check-symlinks" },
+  { id = "check-toml" },
+  { id = "check-xml" },
+  { id = "check-yaml" },
+  { id = "detect-private-key" },
+  { id = "end-of-file-fixer" },
+  { id = "fix-byte-order-marker" },
+  { id = "mixed-line-ending" },
+  { id = "no-commit-to-branch" },
+  { id = "trailing-whitespace" },
+]
+[[repos]]
+repo = "https://github.com/crate-ci/typos"
+rev = "v1.44.0"
+hooks = [{ id = "typos" }]
+[[repos]]
+repo = "https://github.com/python-jsonschema/check-jsonschema"
+rev = "0.37.0"
+hooks = [
+  { id = "check-dependabot" },
+  { id = "check-github-actions" },
+  { id = "check-github-actions" },
+  { id = "check-github-issue-forms" },
+  { id = "check-github-workflows" },
+  { id = "check-renovate" },
+]
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.11"
+hooks = [{ id = "actionlint" }]
+[[repos]]
+repo = "https://github.com/adrienverge/yamllint"
+rev = "v1.38.0"
+hooks = [{ id = "yamllint" }]
+[[repos]]
+repo = "https://github.com/google/yamlfmt"
+rev = "v0.21.0"
+hooks = [{ id = "yamlfmt" }]
+[[repos]]
+repo = "https://github.com/ComPWA/taplo-pre-commit"
+rev = "v0.9.3"
+hooks = [{ id = "taplo-lint" }, { id = "taplo-format" }]
+[[repos]]
+repo = "https://github.com/astral-sh/uv-pre-commit"
+rev = "0.10.9"
+hooks = [{ id = "uv-lock" }]
+[[repos]]
+repo = "https://github.com/abravalheri/validate-pyproject"
+rev = "v0.25"
+hooks = [{ id = "validate-pyproject" }]
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.15.5"
+hooks = [{ id = "ruff-check" }, { id = "ruff-format" }]
+[[repos]]
+repo = "https://github.com/jendrikseipp/vulture"
+rev = "v2.15"
+hooks = [{ id = "vulture" }]
+[[repos]]
+repo = "https://github.com/DetachHead/basedpyright-prek-mirror"
+rev = "1.38.2"
+hooks = [{ id = "basedpyright" }]
+[[repos]]
+repo = "https://github.com/PyCQA/bandit"
+rev = "1.9.4"
+hooks = [
+  { id = "bandit", args = [
+    "-c",
+    "pyproject.toml",
+    "-r",
+    "./src",
+    "./tests",
+  ] },
+]
+[[repos]]
+repo = "https://github.com/asottile/pyupgrade"
+rev = "v3.21.2"
+hooks = [{ id = "pyupgrade", args = ["--py314-plus"] }]
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "local-mypy", name = "local-mypy", language = "system", entry = "uv run mypy", types = [
+    "python",
+  ], exclude_types = [
+    "symlink",
+  ], files = "^((src|tests)/.*\\.py)$" },
+  { id = "local-test", name = "local-test", language = "system", entry = "uv run pytest", types = [
+    "python",
+  ], exclude_types = [
+    "symlink",
+  ], files = "^tests/.*/test_.*\\.py$" },
+]

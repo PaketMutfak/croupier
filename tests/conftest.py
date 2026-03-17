@@ -12,7 +12,10 @@ _TEST_CONFIG = {
 
 
 def pytest_configure(config: object) -> None:
-    """Back up any existing config and write test config before collection triggers module-level Settings()."""
+    """Back up existing config, write test config.
+
+    Must run before module-level Settings() runs.
+    """
     backup = None
     if _CONFIG_PATH.exists():
         backup = _CONFIG_PATH.read_text()

@@ -60,6 +60,10 @@ router = RabbitRouter(settings.queue_url.unicode_string())
     queue=RabbitQueue(
         name=settings.queue_name,
         durable=True,
+        arguments={
+            "x-dead-letter-exchange": "receipt.dispatch.dlx",
+            "x-dead-letter-routing-key": "receipt.dispatch.dlq",
+        },  # ty:ignore[invalid-argument-type]
     ),
     exchange=RabbitExchange(
         name=settings.exchange_name,

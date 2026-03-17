@@ -6,17 +6,24 @@ _TEST_CONFIG = {
     "queue_url": "amqp://guest:guest@127.0.0.1",
     "exchange_name": "test.receipt.dispatch",
     "queue_name": "test.receipt.dispatch",
+    "dlx_name": "test.receipt.dispatch.dlx",
+    "dlq_name": "test.receipt.dispatch.dlq",
 }
 
 
 def pytest_configure(config: object) -> None:
-    """Create test config before test collection triggers module-level Settings()."""
-    if not _CONFIG_PATH.exists():
-        _CONFIG_PATH.write_text(json.dumps(_TEST_CONFIG))
-        config._croupier_test_config = True  # type: ignore[attr-defined]
+    """Back up any existing config and write test config before collection triggers module-level Settings()."""
+    backup = None
+    if _CONFIG_PATH.exists():
+        backup = _CONFIG_PATH.read_text()
+    _CONFIG_PATH.write_text(json.dumps(_TEST_CONFIG))
+    config._croupier_original_config = backup  # type: ignore[attr-defined]
 
 
 def pytest_unconfigure(config: object) -> None:
-    """Remove test config if we created it."""
-    if getattr(config, "_croupier_test_config", False):
+    """Restore original config or remove test config."""
+    original = getattr(config, "_croupier_original_config", None)
+    if original is not None:
+        _CONFIG_PATH.write_text(original)
+    else:
         _CONFIG_PATH.unlink(missing_ok=True)

@@ -46,11 +46,12 @@ Ruff is configured with `select = ["ALL"]` and `unsafe-fixes = true`. Ignored ru
 
 All application logic lives in `src/croupier/main.py` — a single-module design:
 
-- **Settings** — `pydantic-settings` `BaseSettings` subclass that reads *only* from `~/.croupier.json` (no env vars, no .env). Fields: `queue_url` (AMQP DSN), `exchange_name`, `queue_name`.
+- **Settings** — `pydantic-settings` `BaseSettings` subclass that reads _only_ from `~/.croupier.json` (no env vars, no .env). Fields: `queue_url` (AMQP DSN), `exchange_name`, `queue_name`, `dlx_name`, `dlq_name`.
 - **Message** — Pydantic model carrying raw ESC/POS `content: bytes` plus printer network coordinates (`network_host`, `network_timeout`).
-- **RabbitRouter** — `faststream.rabbit.fastapi.RabbitRouter` wired to the configured exchange/queue. The same `handle_message` function serves as both the RabbitMQ subscriber and a `POST /handle-message` HTTP endpoint.
+- **RabbitRouter** — `faststream.rabbit.fastapi.RabbitRouter` wired to the configured exchange/queue with dead letter routing (DLX/DLQ) for failed messages. The same `handle_message` function serves as both the RabbitMQ subscriber and a `POST /handle-message` HTTP endpoint.
 - **Printing** — Uses `python-escpos` `Network` printer; sends raw bytes via `printer._raw()`.
 - **Health** — `GET /` pings the RabbitMQ broker; returns 204 or 500.
+- **Logging** — `RotatingFileHandler` writes to `~/.croupier.log` (10 MB, 5 backups) for `faststream` loggers.
 
 `main.py` at the project root is just the entrypoint that calls `croupier.main.main()`.
 
@@ -58,7 +59,7 @@ All application logic lives in `src/croupier/main.py` — a single-module design
 
 Tests use `faststream.rabbit.TestRabbitBroker` to simulate RabbitMQ in-memory (no broker needed). The `Network` printer is mocked by patching `croupier.main.Network` (not `escpos.printer.Network`). pytest-asyncio is configured with `asyncio_mode = "auto"`.
 
-`tests/conftest.py` auto-creates `~/.croupier.json` with test values if missing (and cleans it up after), because `Settings()` runs at module import time.
+`tests/conftest.py` always overwrites `~/.croupier.json` with test values before collection (backing up any existing file) and restores the original after tests, because `Settings()` runs at module import time.
 
 ## Key Dependencies
 

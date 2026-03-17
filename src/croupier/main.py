@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     queue_url: AmqpDsn
     exchange_name: str
     queue_name: str
+    dlx_name: str
+    dlq_name: str
 
     @classmethod
     def settings_customise_sources(
@@ -61,8 +63,8 @@ router = RabbitRouter(settings.queue_url.unicode_string())
         name=settings.queue_name,
         durable=True,
         arguments={
-            "x-dead-letter-exchange": "receipt.dispatch.dlx",
-            "x-dead-letter-routing-key": "receipt.dispatch.dlq",
+            "x-dead-letter-exchange": settings.dlx_name,
+            "x-dead-letter-routing-key": settings.dlq_name,
         },  # ty:ignore[invalid-argument-type]
     ),
     exchange=RabbitExchange(

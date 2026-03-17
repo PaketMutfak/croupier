@@ -21,4 +21,4 @@ exclude = ["uv.lock", "**/__pycache__/**"]
 [tool.pycrucible.options]
 debug = true
 extract_to_temp = true
-delete_after_run = true  # NOTE: This makes it use the latest dependencies.
+delete_after_run = true # NOTE: This makes it use the latest dependencies.

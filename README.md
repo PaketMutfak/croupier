@@ -32,7 +32,6 @@ Open `demo.py` and change the `network_host` value to the IP address of your ESC
 
 ```python
 message = Message(
-    id=str(uuid.uuid4()),
     content=build_receipt(),
     network_host="<YOUR_PRINTER_IP>",  # e.g. "192.168.1.114"
     network_timeout=10,

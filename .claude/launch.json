@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "croupier",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "main.py"],
+      "port": 8000
+    }
+  ]
+}

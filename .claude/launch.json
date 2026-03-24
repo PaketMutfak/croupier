@@ -4,7 +4,7 @@
     {
       "name": "croupier",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "main.py"],
+      "runtimeArgs": ["run", "croupier"],
       "port": 8000
     }
   ]

@@ -1,3 +1,4 @@
+import socket
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -25,8 +26,10 @@ class TestHandleMessageSubscriber:
     """Tests for handle_message as a RabbitMQ subscriber."""
 
     async def test_subscriber_receives_message(self, sample_message: Message) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_network_cls.return_value = MagicMock()
+        with patch("croupier.main.socket") as mock_socket_mod:
+            mock_socket_mod.AF_INET = socket.AF_INET
+            mock_socket_mod.SOCK_STREAM = socket.SOCK_STREAM
+            mock_socket_mod.SHUT_RDWR = socket.SHUT_RDWR
 
             async with TestRabbitBroker(router.broker) as br:
                 await br.publish(
@@ -36,12 +39,15 @@ class TestHandleMessageSubscriber:
                 )
                 handle_message.mock.assert_called_once()
 
-    async def test_subscriber_opens_printer_connection(
+    async def test_subscriber_sends_content_to_printer(
         self, sample_message: Message
     ) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_network_cls.return_value = mock_printer
+        with patch("croupier.main.socket") as mock_socket_mod:
+            mock_sock = MagicMock()
+            mock_socket_mod.socket.return_value = mock_sock
+            mock_socket_mod.AF_INET = socket.AF_INET
+            mock_socket_mod.SOCK_STREAM = socket.SOCK_STREAM
+            mock_socket_mod.SHUT_RDWR = socket.SHUT_RDWR
 
             async with TestRabbitBroker(router.broker) as br:
                 await br.publish(
@@ -50,28 +56,10 @@ class TestHandleMessageSubscriber:
                     exchange=settings.exchange_name,
                 )
 
-            mock_network_cls.assert_called_once_with(
-                host="192.168.1.100",
-                timeout=10,
-            )
-            mock_printer.open.assert_called_once()
-
-    async def test_subscriber_sends_raw_content_to_printer(
-        self, sample_message: Message
-    ) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(router.broker) as br:
-                await br.publish(
-                    sample_message,
-                    queue=settings.queue_name,
-                    exchange=settings.exchange_name,
-                )
-
-            mock_printer._raw.assert_called_once_with(
-                b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00"
+            mock_sock.settimeout.assert_called_once_with(10)
+            mock_sock.connect.assert_called_once_with(("192.168.1.100", 9100))
+            mock_sock.sendall.assert_called_once_with(
+                b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00",
             )
 
 

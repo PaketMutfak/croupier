@@ -18,7 +18,7 @@ dev = [
   "basedpyright==1.38.3",
   "mypy==1.19.1",
   "parametrize-from-file==0.20.0",
-  "prek==0.3.6",
+  "prek==0.3.8",
   "pyrefly==0.57.1",
   "pytest-asyncio>=1.1.0",
   "pytest~=9.0.2",

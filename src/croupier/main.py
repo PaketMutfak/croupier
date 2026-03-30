@@ -1,10 +1,11 @@
+import contextlib
 import logging
+import socket
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import ClassVar
 
 import uvicorn
-from escpos.printer import Network
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,13 +75,15 @@ router = RabbitRouter(settings.queue_url.unicode_string())
 )
 @router.post("/handle-message")
 async def handle_message(body: Message) -> None:  # noqa: RUF029
-    printer = Network(
-        host=body.network_host,
-        timeout=body.network_timeout,
-    )
-    printer.open()
-    printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
-    printer.close()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(body.network_timeout)
+    sock.connect((body.network_host, 9100))
+    try:
+        sock.sendall(body.content)
+    finally:
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+        sock.close()
 
 
 @router.get("/")

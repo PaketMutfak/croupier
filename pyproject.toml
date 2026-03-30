@@ -19,7 +19,7 @@ dev = [
   "mypy==1.19.1",
   "parametrize-from-file==0.20.0",
   "prek==0.3.8",
-  "pyrefly==0.57.1",
+  "pyrefly==0.58.0",
   "pytest-asyncio>=1.1.0",
   "pytest~=9.0.2",
   "pyupgrade-directories==0.3.0",

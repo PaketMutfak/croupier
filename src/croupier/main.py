@@ -8,7 +8,6 @@ from escpos.printer import Network
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
-from faststream.rabbit import RabbitExchange
 from faststream.rabbit import RabbitQueue
 from faststream.rabbit.fastapi import RabbitRouter
 from pydantic import AmqpDsn
@@ -58,20 +57,7 @@ settings = Settings()  # type: ignore[call-arg]
 router = RabbitRouter(settings.queue_url.unicode_string())
 
 
-@router.subscriber(
-    queue=RabbitQueue(
-        name=settings.queue_name,
-        durable=True,
-        arguments={
-            "x-dead-letter-exchange": settings.dlx_name,
-            "x-dead-letter-routing-key": settings.dlq_name,
-        },  # ty:ignore[invalid-argument-type]
-    ),
-    exchange=RabbitExchange(
-        name=settings.exchange_name,
-        durable=True,
-    ),
-)
+@router.subscriber(queue=RabbitQueue(name=settings.queue_name, declare=False))
 @router.post("/handle-message")
 async def handle_message(body: Message) -> None:  # noqa: RUF029
     printer = Network(

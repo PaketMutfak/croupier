@@ -3,6 +3,7 @@
 import asyncio
 
 from escpos.printer import Dummy
+from faststream.rabbit import RabbitQueue
 
 from croupier.main import Message
 from croupier.main import router
@@ -18,6 +19,7 @@ def build_receipt() -> bytes:
     printer = Dummy()
     printer.set(align="center", bold=True)
     printer.text("DEMO RECEIPT!")
+    printer.ln()
     printer.set(align="left", bold=False)
     printer.text(justify("Item 1", "10.00 TL"))
     printer.ln()
@@ -33,14 +35,14 @@ def build_receipt() -> bytes:
 async def main() -> None:
     message = Message(
         content=build_receipt(),
-        network_host="192.168.1.114",
+        network_host="localhost",
         network_timeout=10,
     )
 
     async with router.broker:
         _ = await router.broker.publish(
             message=message,
-            queue=settings.queue_name,
+            queue=RabbitQueue(name=settings.queue_name, declare=True),
             exchange=settings.exchange_name,
             timeout=60,
         )

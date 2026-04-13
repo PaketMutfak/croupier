@@ -32,7 +32,6 @@ class TestHandleMessageSubscriber:
                 await br.publish(
                     sample_message,
                     queue=settings.queue_name,
-                    exchange=settings.exchange_name,
                 )
                 handle_message.mock.assert_called_once()
 
@@ -47,7 +46,6 @@ class TestHandleMessageSubscriber:
                 await br.publish(
                     sample_message,
                     queue=settings.queue_name,
-                    exchange=settings.exchange_name,
                 )
 
             mock_network_cls.assert_called_once_with(
@@ -67,7 +65,6 @@ class TestHandleMessageSubscriber:
                 await br.publish(
                     sample_message,
                     queue=settings.queue_name,
-                    exchange=settings.exchange_name,
                 )
 
             mock_printer._raw.assert_called_once_with(

@@ -25,7 +25,7 @@ hooks = [
 ]
 [[repos]]
 repo = "https://github.com/crate-ci/typos"
-rev = "v1.45.0"
+rev = "v1.45.1"
 hooks = [{ id = "typos" }]
 [[repos]]
 repo = "https://github.com/python-jsonschema/check-jsonschema"
@@ -56,7 +56,7 @@ rev = "v0.9.3"
 hooks = [{ id = "taplo-lint" }, { id = "taplo-format" }]
 [[repos]]
 repo = "https://github.com/astral-sh/uv-pre-commit"
-rev = "0.11.3"
+rev = "0.11.6"
 hooks = [{ id = "uv-lock" }]
 [[repos]]
 repo = "https://github.com/abravalheri/validate-pyproject"
@@ -64,7 +64,7 @@ rev = "v0.25"
 hooks = [{ id = "validate-pyproject" }]
 [[repos]]
 repo = "https://github.com/astral-sh/ruff-pre-commit"
-rev = "v0.15.9"
+rev = "v0.15.10"
 hooks = [{ id = "ruff-check" }, { id = "ruff-format" }]
 [[repos]]
 repo = "https://github.com/jendrikseipp/vulture"

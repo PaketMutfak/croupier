@@ -1,40 +1,117 @@
 import logging
 from typing import TYPE_CHECKING
 from typing import Any
-from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 import sentry_sdk
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from faststream.exceptions import IgnoredException
 from faststream.message import StreamMessage
+from faststream.rabbit import RabbitBroker
+from faststream.rabbit import RabbitQueue
 from faststream.rabbit import TestRabbitBroker
-from pydantic import AmqpDsn
-from pydantic import HttpUrl
-from pydantic import TypeAdapter
-from pydantic import ValidationError
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.starlette import StarletteIntegration
+from pydantic import ValidationError as PydanticValidationError
+from sentry_sdk.client import NonRecordingClient
+from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
 from croupier.main import Message
-from croupier.main import SentryDsn
-from croupier.main import SentryEnvironment
 from croupier.main import SentryMiddleware
-from croupier.main import Settings
+from croupier.main import broker
 from croupier.main import handle_message
-from croupier.main import health
-from croupier.main import main
-from croupier.main import router
 from croupier.main import settings
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from sentry_sdk.envelope import Envelope
+
+
+class _RecordingTransport(Transport):
+    """Sentry transport that captures events into a list for in-process assertions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict[str, Any]] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        for item in envelope.items:
+            payload = item.payload.json
+            if item.headers.get("type") == "event" and payload is not None:
+                self.events.append(dict(payload))
+
+
+@pytest.fixture
+def recording_transport() -> Iterator[_RecordingTransport]:
+    """Initialize a real Sentry SDK with a recording transport for the test only.
+
+    Tear down by replacing the global client with a ``NonRecordingClient`` —
+    ``sentry_sdk.init(dsn=None)`` does NOT deactivate the client in
+    sentry-sdk 2.x, so subsequent tests would still see ``is_active() is True``
+    and the production short-circuit path could not be exercised.
+
+    Also resets the global isolation scope so fingerprint/tag mutations
+    written by one test do not leak into the next.
+    """
+    transport = _RecordingTransport()
+    sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=transport,
+        default_integrations=False,
+        # Auto-promotion of logger.exception is the production capture path
+        # since SentryMiddleware no longer calls capture_exception() directly.
+        # Mirror that here so event-payload assertions reflect prod behavior.
+        integrations=[
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)
+        ],
+    )
+    try:
+        yield transport
+    finally:
+        sentry_sdk.get_global_scope().set_client(NonRecordingClient())
+        sentry_sdk.get_isolation_scope().clear()
+        sentry_sdk.get_global_scope().clear()
+
+
+@pytest.fixture
+def active_sentry() -> Iterator[None]:
+    """Activate Sentry with a no-op transport for tests that exercise the
+    capture path but do not need to inspect outgoing events.
+
+    Pairs with ``_reset_sentry_global_state`` (autouse) — that fixture
+    deactivates by default, so any middleware test exercising the
+    ``is_active()`` short-circuit's *non-skipped* branch must opt back in.
+    """
+    sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=_RecordingTransport(),
+        default_integrations=False,
+    )
+    try:
+        yield
+    finally:
+        sentry_sdk.get_global_scope().set_client(NonRecordingClient())
+        sentry_sdk.get_isolation_scope().clear()
+        sentry_sdk.get_global_scope().clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_sentry_global_state() -> Iterator[None]:
+    """Ensure every test starts with a NonRecordingClient and a clean scope.
+
+    The bootstrapped app at module import does not initialize Sentry (test
+    config has ``sentry_dsn=null``), but cross-test mutation of the global
+    isolation scope (e.g. fingerprint set during a previous ``handle_message``
+    call) would still bleed into later assertions.
+    """
+    sentry_sdk.get_global_scope().set_client(NonRecordingClient())
+    sentry_sdk.get_isolation_scope().clear()
+    sentry_sdk.get_global_scope().clear()
+    yield
+    sentry_sdk.get_global_scope().set_client(NonRecordingClient())
+    sentry_sdk.get_isolation_scope().clear()
+    sentry_sdk.get_global_scope().clear()
 
 
 @pytest.fixture
@@ -53,11 +130,8 @@ class TestHandleMessageSubscriber:
         with patch("croupier.main.Network") as mock_network_cls:
             mock_network_cls.return_value = MagicMock()
 
-            async with TestRabbitBroker(router.broker) as br:
-                await br.publish(
-                    sample_message,
-                    queue=settings.queue_name,
-                )
+            async with TestRabbitBroker(broker) as br:
+                await br.publish(sample_message, queue=settings.queue_name)
                 handle_message.mock.assert_called_once()
 
     async def test_subscriber_opens_printer_connection(
@@ -67,11 +141,8 @@ class TestHandleMessageSubscriber:
             mock_printer = MagicMock()
             mock_network_cls.return_value = mock_printer
 
-            async with TestRabbitBroker(router.broker) as br:
-                await br.publish(
-                    sample_message,
-                    queue=settings.queue_name,
-                )
+            async with TestRabbitBroker(broker) as br:
+                await br.publish(sample_message, queue=settings.queue_name)
 
             mock_network_cls.assert_called_once_with(
                 host="192.168.1.100",
@@ -86,11 +157,8 @@ class TestHandleMessageSubscriber:
             mock_printer = MagicMock()
             mock_network_cls.return_value = mock_printer
 
-            async with TestRabbitBroker(router.broker) as br:
-                await br.publish(
-                    sample_message,
-                    queue=settings.queue_name,
-                )
+            async with TestRabbitBroker(broker) as br:
+                await br.publish(sample_message, queue=settings.queue_name)
 
             mock_printer._raw.assert_called_once_with(
                 b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00"
@@ -110,7 +178,7 @@ class TestHandleMessageSubscriber:
             ),
         ):
             mock_network_cls.return_value = MagicMock()
-            async with TestRabbitBroker(router.broker) as br:
+            async with TestRabbitBroker(broker) as br:
                 await br.publish(sample_message, queue=settings.queue_name)
 
         mock_set_tag.assert_any_call(
@@ -124,7 +192,7 @@ class TestHandleMessageSubscriber:
             patch("croupier.main.sentry_sdk.set_context") as mock_set_context,
         ):
             mock_network_cls.return_value = MagicMock()
-            async with TestRabbitBroker(router.broker) as br:
+            async with TestRabbitBroker(broker) as br:
                 await br.publish(sample_message, queue=settings.queue_name)
 
         mock_set_context.assert_any_call(
@@ -147,8 +215,12 @@ class TestHandleMessageSubscriber:
             patch("croupier.main.Network") as mock_network_cls,
             patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_breadcrumb,
         ):
-            mock_network_cls.return_value = MagicMock()
-            async with TestRabbitBroker(router.broker) as br:
+            mock_printer = MagicMock()
+            # Breadcrumb pulls the port off the Network instance; mock it
+            # explicitly so the breadcrumb data assertion stays exact.
+            mock_printer.port = 9100
+            mock_network_cls.return_value = mock_printer
+            async with TestRabbitBroker(broker) as br:
                 await br.publish(sample_message, queue=settings.queue_name)
 
         categories_messages = [
@@ -173,14 +245,15 @@ class TestHandleMessageSubscriber:
     async def test_subscriber_closes_printer_on_exception(
         self, sample_message: Message
     ) -> None:
-        # DLQ-routing contract is covered by TestSentryMiddleware; TestRabbitBroker
-        # does not model NACK/DLX semantics, so this test only pins the finally-block.
+        # DLQ-routing contract is covered by TestDlqPropagationThroughMiddleware;
+        # TestRabbitBroker does not model NACK/DLX semantics, so this test only
+        # pins the finally-block.
         with patch("croupier.main.Network") as mock_network_cls:
             mock_printer = MagicMock()
             mock_printer._raw.side_effect = RuntimeError("printer offline")
             mock_network_cls.return_value = mock_printer
 
-            async with TestRabbitBroker(router.broker) as br:
+            async with TestRabbitBroker(broker) as br:
                 with pytest.raises(RuntimeError, match="printer offline"):
                     await br.publish(sample_message, queue=settings.queue_name)
 
@@ -193,7 +266,7 @@ class TestHandleMessageSubscriber:
             mock_printer = MagicMock()
             mock_network_cls.return_value = mock_printer
 
-            async with TestRabbitBroker(router.broker) as br:
+            async with TestRabbitBroker(broker) as br:
                 await br.publish(sample_message, queue=settings.queue_name)
 
             mock_printer.close.assert_called_once()
@@ -210,7 +283,7 @@ class TestHandleMessageSubscriber:
             mock_printer.close.side_effect = OSError("socket already closed")
             mock_network_cls.return_value = mock_printer
 
-            async with TestRabbitBroker(router.broker) as br:
+            async with TestRabbitBroker(broker) as br:
                 with pytest.raises(RuntimeError, match="printer offline"):
                     await br.publish(sample_message, queue=settings.queue_name)
 
@@ -224,49 +297,99 @@ class TestHandleMessageSubscriber:
             mock_printer.open.side_effect = ConnectionError("refused")
             mock_network_cls.return_value = mock_printer
 
-            async with TestRabbitBroker(router.broker) as br:
+            async with TestRabbitBroker(broker) as br:
                 with pytest.raises(ConnectionError, match="refused"):
                     await br.publish(sample_message, queue=settings.queue_name)
 
             mock_printer._raw.assert_not_called()
             mock_printer.close.assert_not_called()
 
+    async def test_close_failure_logs_separate_error(
+        self,
+        sample_message: Message,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # README: "the close failure is captured as a separate Sentry event".
+        # The auto-enabled LoggingIntegration promotes ``logger.exception``
+        # records to standalone Sentry events. With Sentry inactive in the
+        # test config, ``logger.exception`` still lands in the log stream;
+        # asserting that the ``"printer close failed"`` record exists pins
+        # the contract that the close-failure path emits a distinct signal.
+        with patch("croupier.main.Network") as mock_network_cls:
+            mock_printer = MagicMock()
+            mock_printer._raw.side_effect = RuntimeError("printer offline")
+            mock_printer.close.side_effect = OSError("socket already closed")
+            mock_network_cls.return_value = mock_printer
+
+            with caplog.at_level(logging.ERROR, logger="croupier.main"):
+                async with TestRabbitBroker(broker) as br:
+                    with pytest.raises(RuntimeError, match="printer offline"):
+                        await br.publish(sample_message, queue=settings.queue_name)
+
+            assert any(
+                "printer close failed" in rec.message
+                and rec.exc_info is not None
+                and rec.exc_info[0] is OSError
+                for rec in caplog.records
+            )
+
 
 class TestSentryMiddleware:
-    """Tests for the AMQP SentryMiddleware."""
+    """Tests for the AMQP SentryMiddleware.
+
+    All tests in this class use ``active_sentry`` (autouse) — middleware
+    short-circuits via ``is_active()`` when Sentry is not initialized, and
+    the global ``_reset_sentry_global_state`` fixture deactivates by default.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _activate(self, active_sentry: None) -> None:
+        _ = active_sentry
 
     @pytest.fixture
     def stream_message(self) -> StreamMessage[bytes]:
         return MagicMock(spec=StreamMessage)
 
-    async def test_captures_unhandled_exception_and_reraises(
-        self, stream_message: StreamMessage[bytes]
+    async def test_logs_exception_and_reraises(
+        self,
+        stream_message: StreamMessage[bytes],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        # The auto-enabled LoggingIntegration promotes ERROR-level records to
+        # Sentry events; verifying the log record proves both that the path
+        # is reachable and that Sentry would receive an event.
         async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
             msg = "printer offline"
             raise RuntimeError(msg)
 
         middleware = SentryMiddleware(None, context=MagicMock())
         with (
-            patch("croupier.main.sentry_sdk.capture_exception") as mock_capture,
+            caplog.at_level(logging.ERROR, logger="croupier.main"),
             pytest.raises(RuntimeError, match="printer offline"),
         ):
             await middleware.consume_scope(call_next, stream_message)
-        mock_capture.assert_called_once()
+        assert any(
+            "message handler failed" in rec.message and rec.exc_info is not None
+            for rec in caplog.records
+        )
 
-    async def test_skips_capture_for_ignored_exception(
-        self, stream_message: StreamMessage[bytes]
+    async def test_skips_log_for_ignored_exception(
+        self,
+        stream_message: StreamMessage[bytes],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
             raise IgnoredException
 
         middleware = SentryMiddleware(None, context=MagicMock())
         with (
-            patch("croupier.main.sentry_sdk.capture_exception") as mock_capture,
+            caplog.at_level(logging.ERROR, logger="croupier.main"),
             pytest.raises(IgnoredException),
         ):
             await middleware.consume_scope(call_next, stream_message)
-        mock_capture.assert_not_called()
+        assert not any(
+            "message handler failed" in rec.message for rec in caplog.records
+        )
 
     async def test_passes_through_when_no_exception(
         self, stream_message: StreamMessage[bytes]
@@ -275,10 +398,8 @@ class TestSentryMiddleware:
             return "ok"
 
         middleware = SentryMiddleware(None, context=MagicMock())
-        with patch("croupier.main.sentry_sdk.capture_exception") as mock_capture:
-            result = await middleware.consume_scope(call_next, stream_message)
+        result = await middleware.consume_scope(call_next, stream_message)
         assert result == "ok"
-        mock_capture.assert_not_called()
 
     async def test_isolation_scope_does_not_leak_between_messages(
         self, stream_message: StreamMessage[bytes]
@@ -305,7 +426,7 @@ class TestSentryMiddleware:
         assert "scope_id" not in _scope_tags(inner_scopes[1])
         assert "scope_id" not in _scope_tags(outer_scope)
 
-    async def test_tags_exception_class_before_capture(
+    async def test_tags_exception_class_before_log(
         self, stream_message: StreamMessage[bytes]
     ) -> None:
         async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
@@ -314,11 +435,50 @@ class TestSentryMiddleware:
         middleware = SentryMiddleware(None, context=MagicMock())
         with (
             patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            patch("croupier.main.sentry_sdk.capture_exception"),
             pytest.raises(ValueError),  # noqa: PT011
         ):
             await middleware.consume_scope(call_next, stream_message)
         mock_set_tag.assert_any_call("error.class", "ValueError")
+
+    async def test_event_payload_carries_error_class_tag(
+        self,
+        stream_message: StreamMessage[bytes],
+        recording_transport: _RecordingTransport,
+    ) -> None:
+        # Pin actual event payload, not just the set_tag call args.
+        async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
+            msg = "printer offline"
+            raise RuntimeError(msg)
+
+        middleware = SentryMiddleware(None, context=MagicMock())
+        with pytest.raises(RuntimeError, match="printer offline"):
+            await middleware.consume_scope(call_next, stream_message)
+        sentry_sdk.flush(timeout=2)
+
+        assert recording_transport.events, "no event reached transport"
+        tags = recording_transport.events[0].get("tags", {})
+        assert tags.get("error.class") == "RuntimeError"
+
+    async def test_payload_decode_error_uses_default_fingerprint(
+        self,
+        stream_message: StreamMessage[bytes],
+        recording_transport: _RecordingTransport,
+    ) -> None:
+        # Errors raised before handle_message runs (e.g. Pydantic ValidationError
+        # from a malformed AMQP body) must NOT carry the queue_name fingerprint
+        # seed — handle_message is where that fingerprint is set, and decode
+        # errors never reach handle_message.
+        async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
+            Message.model_validate_json(b"{}")
+
+        middleware = SentryMiddleware(None, context=MagicMock())
+        with pytest.raises(PydanticValidationError):
+            await middleware.consume_scope(call_next, stream_message)
+        sentry_sdk.flush(timeout=2)
+
+        assert recording_transport.events, "no event reached transport"
+        fingerprint = recording_transport.events[0].get("fingerprint", [])
+        assert settings.queue_name not in fingerprint
 
 
 def _scope_tags(scope: sentry_sdk.Scope) -> dict[str, object]:
@@ -331,340 +491,81 @@ def _scope_tags(scope: sentry_sdk.Scope) -> dict[str, object]:
     return tags if isinstance(tags, dict) else {}
 
 
-def _build_settings(
-    sentry_dsn: HttpUrl | None = None,
-    sentry_environment: SentryEnvironment = "production",
-) -> Settings:
-    return Settings.model_construct(
-        queue_url=AmqpDsn("amqp://guest:guest@127.0.0.1"),
-        exchange_name="x",
-        queue_name="test.queue",
-        dlx_name="x.dlx",
-        dlq_name="x.dlq",
-        sentry_dsn=sentry_dsn,
-        sentry_environment=sentry_environment,
-    )
+class TestBrokerMiddlewareWiring:
+    """Tests for conditional SentryMiddleware registration on the broker."""
 
-
-class TestSentryInit:
-    """Tests for opt-in/opt-out Sentry initialization in main()."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate_logger_handlers(self) -> Iterator[None]:
-        # main() attaches handlers to the croupier/faststream/sentry_sdk.errors
-        # loggers globally; without this snapshot, mock handlers from one test
-        # leak into the next and crash logger.exception() with TypeError on
-        # `record.levelno >= hdlr.level`.
-        names = (
-            "croupier",
-            "faststream",
-            "faststream.access.rabbit",
-            "sentry_sdk.errors",
+    def test_broker_middleware_state_matches_dsn(self) -> None:
+        # The conftest test config sets sentry_dsn=null by default, so the
+        # broker was constructed at import without SentryMiddleware. Inspect
+        # the actual broker middleware list (an entry can be either the class
+        # itself when used as a factory, or an instance) rather than rebuilding
+        # the tuple — that bypasses the previous tautology version.
+        # Cast to Any so the type checker does not treat the SentryMiddleware
+        # comparison as non-overlapping — at runtime the broker keeps either
+        # the middleware class (factory) or an instance.
+        registered: tuple[Any, ...] = tuple(broker.middlewares)
+        registered_has_sentry = any(
+            m is SentryMiddleware or isinstance(m, SentryMiddleware) for m in registered
         )
-        saved = {n: logging.getLogger(n).handlers[:] for n in names}
-        yield
-        for name, handlers in saved.items():
-            logging.getLogger(name).handlers = handlers[:]
+        if settings.sentry_dsn is None:
+            assert not registered_has_sentry
+        else:
+            assert registered_has_sentry
 
-    def test_init_skipped_when_dsn_is_none(self) -> None:
-        test_settings = _build_settings()
-        with (
-            patch("croupier.main.settings", test_settings),
-            patch("croupier.main.sentry_sdk.init") as mock_init,
-            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            patch("croupier.main.uvicorn.run"),
-            patch("croupier.main.RotatingFileHandler"),
-            patch("croupier.main.logging.getLogger") as mock_get_logger,
-        ):
-            main()
-            mock_init.assert_not_called()
-            mock_set_tag.assert_not_called()
-            for call in mock_get_logger.call_args_list:
-                assert call.args[0] != "sentry_sdk.errors"
+    async def test_middleware_short_circuits_when_sentry_inactive(self) -> None:
+        # Even when SentryMiddleware is wired into the broker (because
+        # sentry_dsn was set in config), it must not open isolation_scope or
+        # call capture when sentry_sdk init never succeeded — covered by the
+        # is_active() check at the top of consume_scope.
+        assert sentry_sdk.get_client().is_active() is False
+        mw = SentryMiddleware(None, context=MagicMock())
 
-    def test_init_called_with_pii_safe_kwargs_when_dsn_set(self) -> None:
-        test_settings = _build_settings(
-            sentry_dsn=HttpUrl("https://k@o.ingest.sentry.io/1"),
-            sentry_environment="production",
-        )
-        with (
-            patch("croupier.main.settings", test_settings),
-            patch("croupier.main.sentry_sdk.init") as mock_init,
-            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            patch("croupier.main.uvicorn.run"),
-            patch("croupier.main.RotatingFileHandler"),
-        ):
-            main()
-            mock_init.assert_called_once()
-            kwargs = mock_init.call_args.kwargs
-            assert kwargs["dsn"] == "https://k@o.ingest.sentry.io/1"
-            assert kwargs["send_default_pii"] is False
-            assert kwargs["include_local_variables"] is False
-            assert kwargs["attach_stacktrace"] is True
-            assert kwargs["environment"] == "production"
-            mock_set_tag.assert_called_with("queue_name", "test.queue")
-
-    def test_init_registers_expected_integrations(self) -> None:
-        test_settings = _build_settings(
-            sentry_dsn=HttpUrl("https://k@o.ingest.sentry.io/1"),
-        )
-        with (
-            patch("croupier.main.settings", test_settings),
-            patch("croupier.main.sentry_sdk.init") as mock_init,
-            patch("croupier.main.sentry_sdk.set_tag"),
-            patch("croupier.main.uvicorn.run"),
-            patch("croupier.main.RotatingFileHandler"),
-        ):
-            main()
-            integrations = mock_init.call_args.kwargs["integrations"]
-            integration_types = {type(i).__name__ for i in integrations}
-            assert "FastApiIntegration" in integration_types
-            assert "StarletteIntegration" in integration_types
-            assert "AsyncioIntegration" in integration_types
-            assert "LoggingIntegration" in integration_types
-
-    def test_logging_integration_silences_event_level(self) -> None:
-        # Prevent double-firing: explicit capture_exception() in handle_message
-        # plus LoggingIntegration default ERROR-as-event would emit two events
-        # for one underlying error. event_level=CRITICAL silences auto-events;
-        # INFO-level breadcrumbs are still emitted.
-        test_settings = _build_settings(
-            sentry_dsn=HttpUrl("https://k@o.ingest.sentry.io/1"),
-        )
-        with (
-            patch("croupier.main.settings", test_settings),
-            patch("croupier.main.sentry_sdk.init") as mock_init,
-            patch("croupier.main.sentry_sdk.set_tag"),
-            patch("croupier.main.uvicorn.run"),
-            patch("croupier.main.RotatingFileHandler"),
-        ):
-            main()
-            integrations = mock_init.call_args.kwargs["integrations"]
-            logging_integration = next(
-                i for i in integrations if type(i).__name__ == "LoggingIntegration"
-            )
-            assert logging_integration._handler.level == logging.CRITICAL
-            assert logging_integration._breadcrumb_handler.level == logging.INFO
-
-    def test_handler_attached_before_sentry_init(self) -> None:
-        test_settings = _build_settings(
-            sentry_dsn=HttpUrl("https://k@o.ingest.sentry.io/1"),
-        )
-        order: list[str] = []
-
-        def _record_init(**_: object) -> None:
-            order.append("init")
-
-        def _record_handler(**_: object) -> MagicMock:
-            order.append("handler")
-            return MagicMock()
+        async def call_next(_msg: StreamMessage[bytes]) -> str:  # noqa: RUF029
+            return "passthrough"
 
         with (
-            patch("croupier.main.settings", test_settings),
-            patch("croupier.main.sentry_sdk.init", side_effect=_record_init),
-            patch("croupier.main.sentry_sdk.set_tag"),
-            patch("croupier.main.uvicorn.run"),
-            patch(
-                "croupier.main.RotatingFileHandler",
-                side_effect=_record_handler,
-            ),
+            patch("croupier.main.sentry_sdk.isolation_scope") as mock_scope,
+            patch("croupier.main.sentry_sdk.capture_exception") as mock_capture,
         ):
-            main()
+            result = await mw.consume_scope(call_next, MagicMock(spec=StreamMessage))
+        assert result == "passthrough"
+        mock_scope.assert_not_called()
+        mock_capture.assert_not_called()
 
-        assert order.index("handler") < order.index("init")
 
-    def test_init_failure_does_not_crash_service(self) -> None:
-        test_settings = _build_settings(
-            sentry_dsn=HttpUrl("https://k@o.ingest.sentry.io/1"),
-        )
-        with (
-            patch("croupier.main.settings", test_settings),
-            patch(
-                "croupier.main.sentry_sdk.init",
-                side_effect=RuntimeError("DSN parse failed"),
-            ),
-            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            patch("croupier.main.uvicorn.run") as mock_run,
-            patch(
-                "croupier.main.RotatingFileHandler",
-                return_value=MagicMock(level=logging.NOTSET),
-            ),
-        ):
-            main()
-            mock_run.assert_called_once()
-            mock_set_tag.assert_not_called()
+class TestDlqPropagationThroughMiddleware:
+    """Lock the regression fixed by commit 7b2d72c.
 
-    def test_handler_attached_before_sentry_init_even_when_init_raises(
-        self,
+    SentryMiddleware must re-raise unhandled exceptions so FastStream's NACK
+    machinery sees them — without re-raise, faststream's __aexit__ semantics
+    silently ACK the message and the DLQ never sees it. TestRabbitBroker does
+    not model NACK/DLX, but it does run the full middleware chain. A test
+    that publishes through a broker with SentryMiddleware wired in and
+    asserts the exception escapes the whole chain pins this contract.
+    """
+
+    async def test_exception_propagates_through_broker_with_middleware(
+        self, sample_message: Message, recording_transport: _RecordingTransport
     ) -> None:
-        # Init failure must not bypass the file-handler attach: operators rely
-        # on ~/.croupier.log to surface the very init failure that disabled
-        # Sentry.
-        test_settings = _build_settings(
-            sentry_dsn=HttpUrl("https://k@o.ingest.sentry.io/1"),
+        # Build a RabbitBroker that mirrors the production wiring (middleware
+        # registered) but uses a local handler that raises. Cannot use the
+        # module-level `broker` because it is constructed at import time
+        # without SentryMiddleware (conftest sets sentry_dsn=null).
+        local_broker = RabbitBroker(
+            settings.queue_url.unicode_string(),
+            middlewares=(SentryMiddleware,),
         )
-        order: list[str] = []
 
-        def _record_init(**_: object) -> None:
-            order.append("init")
-            raise RuntimeError
-
-        def _record_handler(**_: object) -> MagicMock:
-            order.append("handler")
-            return MagicMock(level=logging.NOTSET)
-
-        with (
-            patch("croupier.main.settings", test_settings),
-            patch("croupier.main.sentry_sdk.init", side_effect=_record_init),
-            patch("croupier.main.sentry_sdk.set_tag"),
-            patch("croupier.main.uvicorn.run"),
-            patch(
-                "croupier.main.RotatingFileHandler",
-                side_effect=_record_handler,
-            ),
-        ):
-            main()
-
-        assert order.index("handler") < order.index("init")
-
-
-class TestRouterMiddlewareWiring:
-    """Tests for conditional SentryMiddleware registration on the router."""
-
-    @pytest.mark.parametrize(
-        ("dsn", "expected"),
-        [
-            (None, ()),
-            (HttpUrl("https://k@o.ingest.sentry.io/1"), (SentryMiddleware,)),
-        ],
-    )
-    def test_middleware_tuple_reflects_sentry_dsn(
-        self,
-        dsn: HttpUrl | None,
-        expected: tuple[type[SentryMiddleware], ...],
-    ) -> None:
-        s = _build_settings(sentry_dsn=dsn)
-        actual = (SentryMiddleware,) if s.sentry_dsn is not None else ()
-        assert actual == expected
-
-
-class TestSentryDsnValidator:
-    """Tests for the AfterValidator that rejects malformed Sentry DSNs."""
-
-    @pytest.fixture
-    def adapter(self) -> TypeAdapter[SentryDsn]:
-        return TypeAdapter(SentryDsn)
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://example.com/1",
-            "https://example.com/path/1",
-        ],
-    )
-    def test_rejects_dsn_without_userinfo(
-        self, adapter: TypeAdapter[SentryDsn], url: str
-    ) -> None:
-        with pytest.raises(ValidationError, match="public key"):
-            adapter.validate_python(url)
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://k@example.com",
-            "https://k@example.com/",
-        ],
-    )
-    def test_rejects_dsn_without_project_id(
-        self, adapter: TypeAdapter[SentryDsn], url: str
-    ) -> None:
-        with pytest.raises(ValidationError, match="project id"):
-            adapter.validate_python(url)
-
-    def test_accepts_realistic_dsn(self, adapter: TypeAdapter[SentryDsn]) -> None:
-        url = adapter.validate_python("https://abc123@o42.ingest.sentry.io/4500")
-        assert url.username == "abc123"
-        assert url.path == "/4500"
-
-
-class TestHandleMessageHTTP:
-    """Tests for handle_message exposed as a FastAPI route."""
-
-    def _make_client(self) -> TestClient:
-        app = FastAPI()
-        app.include_router(router)
-        return TestClient(app, raise_server_exceptions=False)
-
-    def test_http_route_returns_500_on_handler_exception(
-        self, sample_message: Message
-    ) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_printer._raw.side_effect = RuntimeError("printer offline")
-            mock_network_cls.return_value = mock_printer
-
-            client = self._make_client()
-            response = client.post(
-                "/handle-message",
-                content=sample_message.model_dump_json(),
-                headers={"Content-Type": "application/json"},
-            )
-
-        assert response.status_code == 500
-        mock_printer.close.assert_called_once()
-
-    def test_http_route_emits_sentry_event_via_fastapi_integration(
-        self, sample_message: Message
-    ) -> None:
-        # Pins the README claim: unhandled errors on the HTTP path are captured
-        # via FastApiIntegration. A 500 response alone would pass without Sentry
-        # wired at all — this asserts an event actually reaches the transport.
-        captured: list[dict[str, object]] = []
-
-        class _RecordingTransport(Transport):
-            def capture_envelope(self, envelope: Envelope) -> None:
-                for item in envelope.items:
-                    payload = item.payload.json
-                    if item.headers.get("type") == "event" and payload is not None:
-                        captured.append(dict(payload))
-
-        sentry_sdk.init(
-            dsn="https://public@example.com/1",
-            transport=_RecordingTransport(),
-            integrations=[FastApiIntegration(), StarletteIntegration()],
-            default_integrations=False,
+        @local_broker.subscriber(
+            queue=RabbitQueue(name=settings.queue_name, declare=False),
         )
-        try:
-            with patch("croupier.main.Network") as mock_network_cls:
-                mock_printer = MagicMock()
-                mock_printer._raw.side_effect = RuntimeError("printer offline")
-                mock_network_cls.return_value = mock_printer
+        async def _local_handle(body: Message) -> None:  # noqa: ARG001, RUF029
+            msg = "printer offline"
+            raise RuntimeError(msg)
 
-                client = self._make_client()
-                response = client.post(
-                    "/handle-message",
-                    content=sample_message.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
-                )
-            assert response.status_code == 500
-            assert captured, "Sentry transport received no event"
-        finally:
-            sentry_sdk.init(dsn=None)
+        async with TestRabbitBroker(local_broker) as br:
+            with pytest.raises(RuntimeError, match="printer offline"):
+                await br.publish(sample_message, queue=settings.queue_name)
 
-
-class TestHealthEndpoint:
-    """Tests for GET / health check."""
-
-    async def test_returns_204_when_broker_is_healthy(self) -> None:
-        mock_request = MagicMock()
-        mock_request.state.broker.ping = AsyncMock(return_value=True)
-
-        response = await health(mock_request)
-        assert response.status_code == 204
-
-    async def test_returns_500_when_broker_is_unhealthy(self) -> None:
-        mock_request = MagicMock()
-        mock_request.state.broker.ping = AsyncMock(return_value=False)
-
-        response = await health(mock_request)
-        assert response.status_code == 500
+        sentry_sdk.flush(timeout=2)
+        assert recording_transport.events, "middleware did not capture event"

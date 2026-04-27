@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 class Settings(BaseSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         extra="ignore",
+        frozen=True,
         json_file=Path.home() / ".croupier.json",
         json_file_encoding="utf-8",
     )

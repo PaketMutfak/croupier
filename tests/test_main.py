@@ -6,6 +6,7 @@ import pytest
 from faststream.rabbit import TestRabbitBroker
 
 from croupier.main import Message
+from croupier.main import _scrub
 from croupier.main import handle_message
 from croupier.main import health
 from croupier.main import router
@@ -70,6 +71,28 @@ class TestHandleMessageSubscriber:
             mock_printer._raw.assert_called_once_with(
                 b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00"
             )
+
+
+class TestScrubber:
+    """Tests for Sentry event PII scrubber."""
+
+    def test_scrubs_top_level_content_key(self) -> None:
+        event = {"content": b"customer secret data"}
+        assert _scrub(event) == {"content": "[Filtered]"}
+
+    def test_scrubs_nested_content_key(self) -> None:
+        event = {"extra": {"body": {"content": b"\x1bt\x00secret"}}}
+        result = _scrub(event)
+        assert result == {"extra": {"body": "[Filtered]"}}
+
+    def test_scrubs_raw_bytes_anywhere(self) -> None:
+        event = {"breadcrumbs": [{"data": {"foo": b"raw"}}]}
+        result = _scrub(event)
+        assert result == {"breadcrumbs": [{"data": "[Filtered]"}]}
+
+    def test_preserves_non_pii_keys(self) -> None:
+        event = {"level": "error", "tags": {"printer.host": "192.168.1.100"}}
+        assert _scrub(event) == event
 
 
 class TestHealthEndpoint:

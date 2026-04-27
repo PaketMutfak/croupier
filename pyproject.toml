@@ -24,7 +24,7 @@ dev = [
   "pytest~=9.0.3",
   "pyupgrade-directories==0.3.0",
   "testcontainers==4.14.2",
-  "zuban==0.7.0",
+  "zuban==0.7.1",
 ]
 
 

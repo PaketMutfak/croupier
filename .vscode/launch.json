@@ -5,7 +5,7 @@
   "configurations": [
     {
       "justMyCode": false,
-      "module": "main",
+      "program": "${workspaceFolder}/main.py",
       "name": "croupier",
       "request": "launch",
       "type": "debugpy"

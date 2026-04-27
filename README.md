@@ -46,7 +46,7 @@ uv run demo.py
 
 ## Error Tracking (Optional)
 
-Croupier ships with optional [Sentry](https://sentry.io) integration for error reporting. When enabled, unhandled exceptions in both the FastAPI HTTP layer and the FastStream RabbitMQ subscriber are captured automatically.
+Croupier ships with optional [Sentry](https://sentry.io) integration for error reporting. When enabled, unhandled exceptions in both the FastAPI HTTP layer and the FastStream RabbitMQ subscriber are captured automatically. If `sentry_sdk.init` raises for any reason — DSN parsing, integration setup, transport bootstrap — the failure is logged to `~/.croupier.log` and Croupier keeps running with Sentry disabled. Receipt printing is never blocked by an observability misconfiguration.
 
 ### Enable
 
@@ -70,25 +70,28 @@ Leave `sentry_dsn` set to `null` (the default), or omit the key, to disable Sent
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `sentry_dsn` | `HttpUrl \| null` | `null` | Sentry project DSN. `null` disables Sentry. Validated as a URL at config load. |
-| `sentry_environment` | `Literal["development", "staging", "production"]` | `"production"` | Deploy stage. Drives Sentry alert rules and release health. |
+| `sentry_dsn` | `HttpUrl \| null` | `null` | Sentry project DSN. `null` disables Sentry. Validated at config load: must include a public key (URL userinfo) and a project id (URL path). |
+| `sentry_environment` | `Literal["development", "staging", "production"] \| null` | `null` | Deploy stage. Required when `sentry_dsn` is set; drives Sentry alert rules and release health. |
 
-`queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and appended to Sentry's default issue fingerprint so identical errors from different branches stay grouped separately.
+`queue_name` is reused as the per-deployment identifier across all Sentry signals (tag, `printer.id` composite, fingerprint seed) — see the bullets below for details.
 
 ### What gets captured
 
 - Unhandled exceptions raised inside any FastAPI route handler (e.g. `POST /handle-message`)
-- RabbitMQ subscriber exceptions (printer failures, broker errors, validation errors)
-- Tags: `queue_name` (process-wide), `printer.id` (`<queue_name>:<network_host>`, per-message; the `queue_name` prefix makes it fleet-unique because `network_host` alone collides across branches that reuse RFC 1918 ranges)
-- Fingerprint: appends `queue_name` to Sentry's default so identical errors from different branches stay grouped separately
-- Context: printer host, timeout, payload size
+- RabbitMQ subscriber exceptions (printer connection failures, broker errors)
+- Tags: `queue_name` (process-wide), `printer.id` (`<queue_name>:<network_host>`, set inside `handle_message`; the `queue_name` prefix makes it fleet-unique because `network_host` alone collides across branches that reuse RFC 1918 ranges)
+- Fingerprint: inside `handle_message`, the isolation scope's fingerprint is set to `["{{ default }}", queue_name]`, so identical printer/payload errors from different deployments stay grouped separately. Errors raised outside the handler use Sentry's default fingerprint.
+- Context (`printer`): `host`, `timeout`, `payload_size` — set inside `handle_message`. With `include_local_variables=False`, raw payload bytes never ride along in stack frames.
+- Breadcrumbs: `printer.open` (with `host`, `port`, `timeout`) and `printer.raw` (with `bytes`) are recorded around each printer interaction so the captured event shows whether the failure was at TCP connect or after data started flowing.
 
 ### Capture architecture
 
-- **HTTP path**: handled by Sentry's auto-enabled FastAPI/Starlette integrations.
-- **AMQP path**: a FastStream middleware captures unhandled exceptions and re-raises so FastStream's NACK → DLQ routing still runs.
-- `IgnoredException` is excluded from capture (FastStream uses it for normal control flow).
+- **HTTP path**: `FastApiIntegration` and `StarletteIntegration` are passed explicitly to `sentry_sdk.init`, so the wiring does not depend on auto-enabling defaults.
+- **AMQP path**: a custom FastStream middleware (`SentryMiddleware`) captures unhandled exceptions and re-raises so FastStream's NACK → DLQ routing still runs. The middleware is only registered when `sentry_dsn` is set; with Sentry disabled there is no per-message scope wrapping at all.
+- **Asyncio safety net**: `AsyncioIntegration` is registered so any unhandled exception in a background asyncio task surfaces in Sentry — defense in depth in case an exception ever escapes the middleware.
+- **Logs as breadcrumbs**: `LoggingIntegration` is registered with `level=INFO` and `event_level=CRITICAL`. INFO-and-up log records (including python-escpos's connection logs and Croupier's own log messages) become breadcrumbs on the captured event; auto-promotion of ERROR logs to standalone Sentry events is silenced so we do not double-fire alongside the explicit `capture_exception` calls in `handle_message`.
+- `IgnoredException` (FastStream's control-flow signal for ack/nack/reject) is excluded from capture.
 
-### Branch deployment tip
+### Deployment tip
 
-Croupier deploys per restaurant location with one queue per branch, so `queue_name` already identifies the location in Sentry. Filter by the `queue_name` tag to isolate per-location issues.
+If you deploy one queue per logical group (per restaurant, per tenant, per region), the `queue_name` tag becomes that group's filter in Sentry — no extra setting required.

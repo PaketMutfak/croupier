@@ -60,8 +60,9 @@ Add `sentry_dsn` to `~/.croupier.json`:
     "dlx_name": "receipt.dispatch.dlx",
     "dlq_name": "receipt.dispatch.dlq",
     "sentry_dsn": "https://<key>@<org>.ingest.sentry.io/<project>",
-    "sentry_environment": "branch-istanbul-1",
-    "sentry_release": "croupier@0.1.0"
+    "sentry_environment": "production",
+    "sentry_release": "croupier@0.1.0",
+    "branch_id": "istanbul-1"
 }
 ```
 
@@ -72,17 +73,18 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 | Field | Type | Default | Purpose |
 |---|---|---|---|
 | `sentry_dsn` | `str \| null` | `null` | Sentry project DSN. `null` disables Sentry. |
-| `sentry_environment` | `str` | `"production"` | Distinguish per branch/stage. Suggest `branch-<id>`. |
+| `sentry_environment` | `str` | `"production"` | Deploy stage: `development`, `staging`, `production`. Drives Sentry alert rules and release health. |
 | `sentry_release` | `str \| null` | `null` | Version/commit SHA. Links errors to deploys. |
 | `sentry_sample_rate` | `float` | `1.0` | Fraction of errors sent (0.0–1.0). |
 | `sentry_traces_sample_rate` | `float` | `0.0` | Fraction of perf transactions sent. `0.0` = errors only. |
 | `sentry_max_breadcrumbs` | `int` | `30` | Breadcrumb buffer size per event. |
+| `branch_id` | `str \| null` | `null` | Restaurant location identifier (e.g. `istanbul-1`). Sent as Sentry tag for per-location filtering. |
 
 ### What gets captured
 
 - HTTP exceptions on `/handle-message` and `/`
 - RabbitMQ subscriber exceptions (printer failures, broker errors, validation errors)
-- Tags: `printer.host`
+- Tags: `printer.host`, `branch_id` (when set)
 - Context: printer host, timeout, payload size
 
 ### PII scrubbing
@@ -99,4 +101,4 @@ If you self-host Sentry on trusted infra and want raw content for debugging, edi
 
 ### Branch deployment tip
 
-Use a unique `sentry_environment` per branch (e.g. `branch-istanbul-1`, `branch-ankara-2`). In Sentry filter by environment to isolate errors per location. Set `sentry_release` to your build tag/commit SHA to correlate errors with code changes.
+Croupier deploys per restaurant location. Keep `sentry_environment` aligned with deploy stage (`development` / `staging` / `production`) and use `branch_id` for the location identifier (e.g. `istanbul-1`, `ankara-2`). In Sentry, filter errors by `branch_id` tag to isolate per-location issues without fragmenting release health stats. Set `sentry_release` to your build tag/commit SHA to correlate errors with code changes.

@@ -71,12 +71,12 @@ class Message(BaseModel):
     network_timeout: int
 
 
-class SentryMiddleware(BaseMiddleware[Any, Any]):
+class SentryMiddleware(BaseMiddleware[Any, bytes]):
     @override
     async def consume_scope(
         self,
-        call_next: Callable[[StreamMessage[Any]], Awaitable[Any]],
-        msg: StreamMessage[Any],
+        call_next: Callable[[StreamMessage[bytes]], Awaitable[Any]],
+        msg: StreamMessage[bytes],
     ) -> Any:
         with sentry_sdk.isolation_scope():
             try:

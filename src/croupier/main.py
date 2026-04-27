@@ -131,12 +131,12 @@ def main() -> None:
             dsn=settings.sentry_dsn,
             environment=settings.sentry_environment,
             release=settings.sentry_release,
-            server_name=settings.queue_name,
             send_default_pii=False,
             include_local_variables=False,
             attach_stacktrace=True,
             before_send=_scrub_event,
         )
+        sentry_sdk.set_tag("queue_name", settings.queue_name)
 
     file_handler = RotatingFileHandler(
         filename=Path.home() / ".croupier.log",

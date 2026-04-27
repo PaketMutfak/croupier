@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import ClassVar
-from typing import cast
+from typing import Literal
+from typing import override
 
 import sentry_sdk
 import uvicorn
@@ -12,13 +13,14 @@ from escpos.printer import Network
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from faststream import BaseMiddleware
 from faststream.exceptions import IgnoredException
-from faststream.middlewares import ExceptionMiddleware
 from faststream.rabbit import RabbitQueue
 from faststream.rabbit.fastapi import RabbitRouter
 from pydantic import AmqpDsn
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import HttpUrl
 from pydantic_settings import BaseSettings
 from pydantic_settings import JsonConfigSettingsSource
 from pydantic_settings import PydanticBaseSettingsSource
@@ -28,11 +30,10 @@ from starlette.status import HTTP_204_NO_CONTENT
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 
 if TYPE_CHECKING:
-    from sentry_sdk._types import Event
-    from sentry_sdk._types import Hint
+    from collections.abc import Awaitable
+    from collections.abc import Callable
 
-_PII_SENTINEL = "[Filtered]"
-_PII_KEYS: frozenset[str] = frozenset({"content", "body", "data"})
+    from faststream.message import StreamMessage
 
 
 class Settings(BaseSettings):
@@ -46,8 +47,8 @@ class Settings(BaseSettings):
     queue_name: str
     dlx_name: str
     dlq_name: str
-    sentry_dsn: str | None = None
-    sentry_environment: str = "production"
+    sentry_dsn: HttpUrl | None = None
+    sentry_environment: Literal["development", "staging", "production"] = "production"
     sentry_release: str | None = None
 
     @classmethod
@@ -69,36 +70,46 @@ class Message(BaseModel):
     network_timeout: int
 
 
-exception_middleware = ExceptionMiddleware()
-
-
-@exception_middleware.add_handler(Exception)
-def _capture_to_sentry(exc: Exception) -> None:
-    if isinstance(exc, IgnoredException):
-        return
-    sentry_sdk.capture_exception(exc)
+class SentryMiddleware(BaseMiddleware[Any, Any]):
+    @override
+    async def consume_scope(
+        self,
+        call_next: Callable[[StreamMessage[Any]], Awaitable[Any]],
+        msg: StreamMessage[Any],
+    ) -> Any:
+        with sentry_sdk.isolation_scope():
+            try:
+                return await call_next(msg)
+            except IgnoredException:
+                raise
+            except Exception:
+                sentry_sdk.capture_exception()
+                raise
 
 
 settings = Settings()  # type: ignore[call-arg]
 router = RabbitRouter(
     settings.queue_url.unicode_string(),
-    middlewares=(exception_middleware,),
+    middlewares=(SentryMiddleware,),
 )
 
 
 @router.subscriber(queue=RabbitQueue(name=settings.queue_name, declare=False))
 @router.post("/handle-message")
 async def handle_message(body: Message) -> None:  # noqa: RUF029
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
-        scope.fingerprint = ["{{ default }}", settings.queue_name]
-        printer = Network(
-            host=body.network_host,
-            timeout=body.network_timeout,
-        )
-        printer.open()
-        printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
-        printer.close()
+    sentry_sdk.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
+    # pyrefly: ignore[missing-attribute]
+    sentry_sdk.get_isolation_scope().fingerprint = [
+        "{{ default }}",
+        settings.queue_name,
+    ]
+    printer = Network(
+        host=body.network_host,
+        timeout=body.network_timeout,
+    )
+    printer.open()
+    printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
+    printer.close()
 
 
 @router.get("/")
@@ -108,33 +119,15 @@ async def health(request: Request) -> Response:
     return Response(status_code=HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-def _scrub(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _PII_SENTINEL if key in _PII_KEYS else _scrub(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_scrub(item) for item in value]
-    if isinstance(value, (bytes, bytearray)):
-        return _PII_SENTINEL
-    return value
-
-
-def _scrub_event(event: Event, _hint: Hint) -> Event | None:
-    return cast("Event", _scrub(event))
-
-
 def main() -> None:
-    if settings.sentry_dsn:
+    if settings.sentry_dsn is not None:
         sentry_sdk.init(
-            dsn=settings.sentry_dsn,
+            dsn=str(settings.sentry_dsn),
             environment=settings.sentry_environment,
             release=settings.sentry_release,
             send_default_pii=False,
             include_local_variables=False,
             attach_stacktrace=True,
-            before_send=_scrub_event,
         )
         sentry_sdk.set_tag("queue_name", settings.queue_name)
 
@@ -146,7 +139,7 @@ def main() -> None:
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"),
     )
-    for name in ("faststream", "faststream.access.rabbit"):
+    for name in ("faststream", "faststream.access.rabbit", "sentry_sdk.errors"):
         logging.getLogger(name).addHandler(file_handler)
 
     app = FastAPI(debug=True)

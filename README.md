@@ -71,8 +71,8 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `sentry_dsn` | `str \| null` | `null` | Sentry project DSN. `null` disables Sentry. |
-| `sentry_environment` | `str` | `"production"` | Deploy stage: `development`, `staging`, `production`. Drives Sentry alert rules and release health. |
+| `sentry_dsn` | `HttpUrl \| null` | `null` | Sentry project DSN. `null` disables Sentry. Validated as a URL at config load. |
+| `sentry_environment` | `Literal["development", "staging", "production"]` | `"production"` | Deploy stage. Drives Sentry alert rules and release health. |
 | `sentry_release` | `str \| null` | `null` | Version/commit SHA. Links errors to deploys. |
 
 `queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and seeds the issue fingerprint so identical errors from different branches stay grouped separately.
@@ -85,17 +85,21 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 - Fingerprint: includes `queue_name` so identical errors from different branches stay grouped separately
 - Context: printer host, timeout, payload size
 
-### PII scrubbing
+### PII posture
 
-Receipt content (`Message.content`) may contain customer data — names, items, addresses. Croupier strips it before sending to Sentry:
+Receipt content (`Message.content`) may contain customer data. Croupier minimizes what Sentry sees by relying on SDK defaults:
 
 - `send_default_pii=False` — no IPs, cookies, headers
-- `include_local_variables=False` — no stack-frame locals
-- Custom `before_send` hook recursively replaces:
-  - Any `content`, `body`, `data` dict key with `[Filtered]`
-  - Any raw `bytes`/`bytearray` value with `[Filtered]`
+- `include_local_variables=False` — no stack-frame locals (so the raw `body: Message` is not pulled into frame variables)
+- `attach_stacktrace=True` — stacktraces include filenames and function names but, with locals off, no payload bytes
 
-If you self-host Sentry on trusted infra and want raw content for debugging, edit `_scrub` in `src/croupier/main.py`.
+There is no custom `before_send` scrubber yet. If a future capture path leaks payload bytes (e.g. a custom `extra` context), add scrubbing then.
+
+### Capture architecture
+
+- **HTTP path**: handled by Sentry's auto-enabled `FastApiIntegration` + `StarletteIntegration` (no explicit registration).
+- **AMQP path**: a custom `SentryMiddleware(BaseMiddleware)` wraps each subscriber message in `sentry_sdk.isolation_scope()`, calls `capture_exception` on unhandled exceptions, then re-raises so FastStream's default NACK → DLQ flow runs.
+- `IgnoredException` is excluded from capture (FastStream uses it for normal control flow).
 
 ### Branch deployment tip
 

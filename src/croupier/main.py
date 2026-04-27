@@ -136,7 +136,7 @@ def main() -> None:
 
     if settings.sentry_dsn is not None:
         sentry_sdk.init(
-            dsn=str(settings.sentry_dsn),
+            dsn=settings.sentry_dsn.unicode_string(),
             environment=settings.sentry_environment,
             release=settings.sentry_release,
             send_default_pii=False,

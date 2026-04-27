@@ -75,14 +75,13 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 | `sentry_environment` | `str` | `"production"` | Deploy stage: `development`, `staging`, `production`. Drives Sentry alert rules and release health. |
 | `sentry_release` | `str \| null` | `null` | Version/commit SHA. Links errors to deploys. |
 
-`queue_name` doubles as the per-branch identifier in Sentry: it's passed as `server_name` to `sentry_sdk.init`, used in the `printer.id` composite, and seeds the issue fingerprint so identical errors from different branches stay grouped separately.
+`queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and seeds the issue fingerprint so identical errors from different branches stay grouped separately.
 
 ### What gets captured
 
 - HTTP exceptions on `/handle-message` and `/`
 - RabbitMQ subscriber exceptions (printer failures, broker errors, validation errors)
-- `server_name`: set to `queue_name` for per-branch process identity (replaces the default hostname)
-- Tags: `printer.id` (`<queue_name>:<network_host>`, per-message; fleet-unique because branches share RFC 1918 ranges)
+- Tags: `queue_name` (process-wide), `printer.id` (`<queue_name>:<network_host>`, per-message; fleet-unique because branches share RFC 1918 ranges)
 - Fingerprint: includes `queue_name` so identical errors from different branches stay grouped separately
 - Context: printer host, timeout, payload size
 
@@ -100,4 +99,4 @@ If you self-host Sentry on trusted infra and want raw content for debugging, edi
 
 ### Branch deployment tip
 
-Croupier deploys per restaurant location. Each branch already has a unique `queue_name` (one queue per branch), so that doubles as the location identifier in Sentry — no extra setting needed. Keep `sentry_environment` aligned with deploy stage (`development` / `staging` / `production`); filter errors by `server_name` in Sentry to isolate per-location issues without fragmenting release-health stats. Set `sentry_release` to your build tag/commit SHA to correlate errors with code changes.
+Croupier deploys per restaurant location. Each branch already has a unique `queue_name` (one queue per branch), so that doubles as the location identifier in Sentry — no extra setting needed. Keep `sentry_environment` aligned with deploy stage (`development` / `staging` / `production`); filter errors by the `queue_name` tag in Sentry to isolate per-location issues without fragmenting release-health stats. Set `sentry_release` to your build tag/commit SHA to correlate errors with code changes.

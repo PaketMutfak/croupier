@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.0
     sentry_sample_rate: float = 1.0
     sentry_max_breadcrumbs: int = 30
+    branch_id: str | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -140,6 +141,8 @@ def main() -> None:
             attach_stacktrace=True,
             before_send=_scrub_event,
         )
+        if settings.branch_id:
+            sentry_sdk.set_tag("branch_id", settings.branch_id)
 
     file_handler = RotatingFileHandler(
         filename=Path.home() / ".croupier.log",

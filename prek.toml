@@ -97,10 +97,10 @@ hooks = [
     "python",
   ], exclude_types = [
     "symlink",
-  ], files = "^((src|tests)/.*\\.py)$" },
+  ], files = "^((src|tests)/.*\\.py)$", pass_filenames = false },
   { id = "local-test", name = "local-test", language = "system", entry = "uv run pytest", types = [
     "python",
   ], exclude_types = [
     "symlink",
-  ], files = "^tests/.*/test_.*\\.py$" },
+  ], files = "^tests/.*/test_.*\\.py$", pass_filenames = false },
 ]

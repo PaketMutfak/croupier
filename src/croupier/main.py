@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     sentry_dsn: str | None = None
     sentry_environment: str = "production"
     sentry_release: str | None = None
-    sentry_traces_sample_rate: float = 0.0
 
     @classmethod
     def settings_customise_sources(
@@ -133,7 +132,6 @@ def main() -> None:
             dsn=settings.sentry_dsn,
             environment=settings.sentry_environment,
             release=settings.sentry_release,
-            traces_sample_rate=settings.sentry_traces_sample_rate,
             send_default_pii=False,
             include_local_variables=False,
             attach_stacktrace=True,

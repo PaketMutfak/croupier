@@ -7,10 +7,11 @@ license = "MIT"
 authors = [{ name = "Hasan Sezer Taşan", email = "hasansezertasan@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
-  "fastapi[standard]==0.136.1",
   "faststream[rabbit]==0.6.7",
+  "lite-bootstrap[faststream-all,pyroscope]==0.25.4",
+  "pydantic-settings==2.14.0",
   "python-escpos==3.1",
-  "sentry-sdk[fastapi]==2.58.0",
+  "uvicorn==0.46.0",
 ]
 
 
@@ -25,7 +26,7 @@ dev = [
   "pytest~=9.0.3",
   "pyupgrade-directories==0.3.0",
   "testcontainers==4.14.2",
-  "types-pyyaml==6.0.12.20250915",
+  "types-pyyaml==6.0.12.20260408",
   "types-ujson==5.10.0.20250822",
   "zuban==0.7.2",
 ]

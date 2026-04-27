@@ -90,7 +90,6 @@ router = RabbitRouter(
 @router.post("/handle-message")
 async def handle_message(body: Message) -> None:  # noqa: RUF029
     with sentry_sdk.new_scope() as scope:
-        scope.set_tag("printer.host", body.network_host)
         scope.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
         scope.fingerprint = ["{{ default }}", settings.queue_name]
         printer = Network(

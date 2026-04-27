@@ -108,8 +108,10 @@ async def handle_message(body: Message) -> None:  # noqa: RUF029
         timeout=body.network_timeout,
     )
     printer.open()
-    printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
-    printer.close()
+    try:
+        printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
+    finally:
+        printer.close()
 
 
 @router.get("/")

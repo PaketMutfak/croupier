@@ -84,7 +84,8 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 
 - HTTP exceptions on `/handle-message` and `/`
 - RabbitMQ subscriber exceptions (printer failures, broker errors, validation errors)
-- Tags: `printer.host`, `branch_id` (when set)
+- Tags: `branch_id` (process-wide, when set), `printer.host` (raw IP, per-message), `printer.id` (`<branch_id>:<network_host>`, per-message; disambiguates printers across branches with overlapping LAN ranges)
+- Fingerprint: includes `branch_id` so identical errors from different branches stay grouped separately
 - Context: printer host, timeout, payload size
 
 ### PII scrubbing

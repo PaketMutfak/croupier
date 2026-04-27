@@ -64,7 +64,7 @@ Add `sentry_dsn` to `~/.croupier.json`:
 }
 ```
 
-Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound calls, no overhead.
+Leave `sentry_dsn` set to `null` (the default), or omit the key, to disable Sentry entirely.
 
 ### Settings reference
 
@@ -73,22 +73,22 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 | `sentry_dsn` | `HttpUrl \| null` | `null` | Sentry project DSN. `null` disables Sentry. Validated as a URL at config load. |
 | `sentry_environment` | `Literal["development", "staging", "production"]` | `"production"` | Deploy stage. Drives Sentry alert rules and release health. |
 
-`queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and seeds the issue fingerprint so identical errors from different branches stay grouped separately.
+`queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and appended to Sentry's default issue fingerprint so identical errors from different branches stay grouped separately.
 
 ### What gets captured
 
-- HTTP exceptions on `/handle-message` and `/`
+- Unhandled exceptions raised inside any FastAPI route handler (e.g. `POST /handle-message`)
 - RabbitMQ subscriber exceptions (printer failures, broker errors, validation errors)
-- Tags: `queue_name` (process-wide), `printer.id` (`<queue_name>:<network_host>`, per-message; fleet-unique because branches share RFC 1918 ranges)
-- Fingerprint: includes `queue_name` so identical errors from different branches stay grouped separately
+- Tags: `queue_name` (process-wide), `printer.id` (`<queue_name>:<network_host>`, per-message; the `queue_name` prefix makes it fleet-unique because `network_host` alone collides across branches that reuse RFC 1918 ranges)
+- Fingerprint: appends `queue_name` to Sentry's default so identical errors from different branches stay grouped separately
 - Context: printer host, timeout, payload size
 
 ### Capture architecture
 
-- **HTTP path**: handled by Sentry's auto-enabled `FastApiIntegration` + `StarletteIntegration` (no explicit registration).
-- **AMQP path**: a custom `SentryMiddleware(BaseMiddleware)` wraps each subscriber message in `sentry_sdk.isolation_scope()`, calls `capture_exception` on unhandled exceptions, then re-raises so FastStream's default NACK → DLQ flow runs.
+- **HTTP path**: handled by Sentry's auto-enabled FastAPI/Starlette integrations.
+- **AMQP path**: a FastStream middleware captures unhandled exceptions and re-raises so FastStream's NACK → DLQ routing still runs.
 - `IgnoredException` is excluded from capture (FastStream uses it for normal control flow).
 
 ### Branch deployment tip
 
-Croupier deploys per restaurant location. Each branch already has a unique `queue_name` (one queue per branch), so that doubles as the location identifier in Sentry — no extra setting needed. Keep `sentry_environment` aligned with deploy stage (`development` / `staging` / `production`); filter errors by the `queue_name` tag in Sentry to isolate per-location issues without fragmenting release-health stats.
+Croupier deploys per restaurant location with one queue per branch, so `queue_name` already identifies the location in Sentry. Filter by the `queue_name` tag to isolate per-location issues.

@@ -60,8 +60,7 @@ Add `sentry_dsn` to `~/.croupier.json`:
     "dlx_name": "receipt.dispatch.dlx",
     "dlq_name": "receipt.dispatch.dlq",
     "sentry_dsn": "https://<key>@<org>.ingest.sentry.io/<project>",
-    "sentry_environment": "production",
-    "sentry_release": "croupier@0.1.0"
+    "sentry_environment": "production"
 }
 ```
 
@@ -73,7 +72,6 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 |---|---|---|---|
 | `sentry_dsn` | `HttpUrl \| null` | `null` | Sentry project DSN. `null` disables Sentry. Validated as a URL at config load. |
 | `sentry_environment` | `Literal["development", "staging", "production"]` | `"production"` | Deploy stage. Drives Sentry alert rules and release health. |
-| `sentry_release` | `str \| null` | `null` | Version/commit SHA. Links errors to deploys. |
 
 `queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and seeds the issue fingerprint so identical errors from different branches stay grouped separately.
 
@@ -93,4 +91,4 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 
 ### Branch deployment tip
 
-Croupier deploys per restaurant location. Each branch already has a unique `queue_name` (one queue per branch), so that doubles as the location identifier in Sentry — no extra setting needed. Keep `sentry_environment` aligned with deploy stage (`development` / `staging` / `production`); filter errors by the `queue_name` tag in Sentry to isolate per-location issues without fragmenting release-health stats. Set `sentry_release` to your build tag/commit SHA to correlate errors with code changes.
+Croupier deploys per restaurant location. Each branch already has a unique `queue_name` (one queue per branch), so that doubles as the location identifier in Sentry — no extra setting needed. Keep `sentry_environment` aligned with deploy stage (`development` / `staging` / `production`); filter errors by the `queue_name` tag in Sentry to isolate per-location issues without fragmenting release-health stats.

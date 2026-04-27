@@ -50,7 +50,6 @@ class Settings(BaseSettings):
     dlq_name: str
     sentry_dsn: HttpUrl | None = None
     sentry_environment: Literal["development", "staging", "production"] = "production"
-    sentry_release: str | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -138,7 +137,6 @@ def main() -> None:
         sentry_sdk.init(
             dsn=settings.sentry_dsn.unicode_string(),
             environment=settings.sentry_environment,
-            release=settings.sentry_release,
             send_default_pii=False,
             include_local_variables=False,
             attach_stacktrace=True,

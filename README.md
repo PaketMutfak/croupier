@@ -74,9 +74,7 @@ Leave `sentry_dsn` `null` (or omit) to disable Sentry entirely. No outbound call
 | `sentry_dsn` | `str \| null` | `null` | Sentry project DSN. `null` disables Sentry. |
 | `sentry_environment` | `str` | `"production"` | Deploy stage: `development`, `staging`, `production`. Drives Sentry alert rules and release health. |
 | `sentry_release` | `str \| null` | `null` | Version/commit SHA. Links errors to deploys. |
-| `sentry_sample_rate` | `float` | `1.0` | Fraction of errors sent (0.0–1.0). |
 | `sentry_traces_sample_rate` | `float` | `0.0` | Fraction of perf transactions sent. `0.0` = errors only. |
-| `sentry_max_breadcrumbs` | `int` | `30` | Breadcrumb buffer size per event. |
 
 `queue_name` doubles as the per-branch identifier in Sentry: it's set as the `queue_name` tag at startup, used in the `printer.id` composite, and seeds the issue fingerprint so identical errors from different branches stay grouped separately.
 

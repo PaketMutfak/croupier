@@ -25,6 +25,8 @@ dev = [
   "pytest~=9.0.3",
   "pyupgrade-directories==0.3.0",
   "testcontainers==4.14.2",
+  "types-pyyaml==6.0.12.20250915",
+  "types-ujson==5.10.0.20250822",
   "zuban==0.7.1",
 ]
 
@@ -115,9 +117,7 @@ python-version = "3.14"
 [tool.mypy]
 files = ["src", "tests"]
 ignore_missing_imports = true
-install_types = true
 mypy_path = ["src"]
-non_interactive = true
 pretty = true
 python_version = "3.14"
 strict = true

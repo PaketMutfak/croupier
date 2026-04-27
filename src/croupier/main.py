@@ -52,7 +52,6 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.0
     sentry_sample_rate: float = 1.0
     sentry_max_breadcrumbs: int = 30
-    branch_id: str | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -93,11 +92,10 @@ router = RabbitRouter(
 @router.subscriber(queue=RabbitQueue(name=settings.queue_name, declare=False))
 @router.post("/handle-message")
 async def handle_message(body: Message) -> None:  # noqa: RUF029
-    branch = settings.branch_id or "unknown"
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("printer.host", body.network_host)
-        scope.set_tag("printer.id", f"{branch}:{body.network_host}")
-        scope.fingerprint = ["{{ default }}", branch]
+        scope.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
+        scope.fingerprint = ["{{ default }}", settings.queue_name]
         printer = Network(
             host=body.network_host,
             timeout=body.network_timeout,
@@ -145,8 +143,7 @@ def main() -> None:
             attach_stacktrace=True,
             before_send=_scrub_event,
         )
-        if settings.branch_id:
-            sentry_sdk.set_tag("branch_id", settings.branch_id)
+        sentry_sdk.set_tag("queue_name", settings.queue_name)
 
     file_handler = RotatingFileHandler(
         filename=Path.home() / ".croupier.log",

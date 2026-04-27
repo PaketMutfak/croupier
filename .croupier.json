@@ -6,6 +6,5 @@
     "queue_url": "amqp://guest:guest@127.0.0.1",
     "sentry_dsn": null,
     "sentry_environment": "development",
-    "sentry_release": null,
-    "branch_id": null
+    "sentry_release": null
 }

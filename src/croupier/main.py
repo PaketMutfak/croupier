@@ -93,14 +93,18 @@ router = RabbitRouter(
 @router.subscriber(queue=RabbitQueue(name=settings.queue_name, declare=False))
 @router.post("/handle-message")
 async def handle_message(body: Message) -> None:  # noqa: RUF029
-    sentry_sdk.set_tag("printer.host", body.network_host)
-    printer = Network(
-        host=body.network_host,
-        timeout=body.network_timeout,
-    )
-    printer.open()
-    printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
-    printer.close()
+    branch = settings.branch_id or "unknown"
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("printer.host", body.network_host)
+        scope.set_tag("printer.id", f"{branch}:{body.network_host}")
+        scope.fingerprint = ["{{ default }}", branch]
+        printer = Network(
+            host=body.network_host,
+            timeout=body.network_timeout,
+        )
+        printer.open()
+        printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
+        printer.close()
 
 
 @router.get("/")

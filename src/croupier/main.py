@@ -120,17 +120,6 @@ async def health(request: Request) -> Response:
 
 
 def main() -> None:
-    if settings.sentry_dsn is not None:
-        sentry_sdk.init(
-            dsn=str(settings.sentry_dsn),
-            environment=settings.sentry_environment,
-            release=settings.sentry_release,
-            send_default_pii=False,
-            include_local_variables=False,
-            attach_stacktrace=True,
-        )
-        sentry_sdk.set_tag("queue_name", settings.queue_name)
-
     file_handler = RotatingFileHandler(
         filename=Path.home() / ".croupier.log",
         maxBytes=10 * 1024 * 1024,
@@ -141,6 +130,17 @@ def main() -> None:
     )
     for name in ("faststream", "faststream.access.rabbit", "sentry_sdk.errors"):
         logging.getLogger(name).addHandler(file_handler)
+
+    if settings.sentry_dsn is not None:
+        sentry_sdk.init(
+            dsn=str(settings.sentry_dsn),
+            environment=settings.sentry_environment,
+            release=settings.sentry_release,
+            send_default_pii=False,
+            include_local_variables=False,
+            attach_stacktrace=True,
+        )
+        sentry_sdk.set_tag("queue_name", settings.queue_name)
 
     app = FastAPI(debug=True)
     app.include_router(router)

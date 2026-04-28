@@ -18,7 +18,6 @@ dependencies = [
 [dependency-groups]
 dev = [
   "basedpyright==1.39.3",
-  "mypy==2.0.0",
   "parametrize-from-file==0.21.0",
   "prek==0.3.13",
   "pyrefly==1.0.0",
@@ -26,8 +25,6 @@ dev = [
   "pytest~=9.0.3",
   "pyupgrade-directories==0.3.0",
   "testcontainers==4.14.2",
-  "types-pyyaml==6.0.12.20260408",
-  "types-ujson==5.10.0.20250822",
   "zuban==0.7.2",
 ]
 

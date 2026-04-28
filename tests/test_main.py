@@ -418,12 +418,14 @@ class TestHandleMessageSubscriber:
         sample_message: Message,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # README: "the close failure is captured as a separate Sentry event".
-        # The auto-enabled LoggingIntegration promotes ``logger.exception``
-        # records to standalone Sentry events. With Sentry inactive in the
-        # test config, ``logger.exception`` still lands in the log stream;
-        # asserting that the ``"printer close failed"`` record exists pins
-        # the contract that the close-failure path emits a distinct signal.
+        # The close-failure path must emit a distinct ``logger.exception``
+        # record so the auto-enabled ``LoggingIntegration`` (level=ERROR)
+        # promotes it to a standalone Sentry event — separate from the
+        # original ``_raw()`` exception that propagates out via the
+        # finally-suppression path. With Sentry inactive in the test config,
+        # ``logger.exception`` still lands in the log stream; asserting the
+        # ``"printer close failed"`` record exists pins the distinct-signal
+        # contract without depending on Sentry being initialized.
         with patch("croupier.main.Network") as mock_network_cls:
             mock_printer = MagicMock()
             mock_printer._raw.side_effect = RuntimeError("printer offline")

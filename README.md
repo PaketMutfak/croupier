@@ -56,7 +56,7 @@ Croupier is a FastStream RabbitMQ subscriber wrapped by [`lite-bootstrap`](https
 
 There is no FastAPI HTTP route. Receipts arrive only via the RabbitMQ queue declared at startup. The `POST /handle-message` route that earlier versions exposed has been removed.
 
-OpenTelemetry tracing and Pyroscope continuous profiling stay inert until their endpoints are set: add `opentelemetry_endpoint=` (an OTLP collector URL) and/or `pyroscope_endpoint=` to the `FastStreamConfig` call in `main()`. The OpenTelemetry middleware class (`RabbitTelemetryMiddleware`) is already plumbed in; the Pyroscope extra (`lite-bootstrap[pyroscope]`) is installed but `lite_bootstrap` only activates the profiler when the endpoint is provided. Activation is a single config edit either way.
+OpenTelemetry tracing and Pyroscope continuous profiling stay inert until their endpoints are set: add `opentelemetry_endpoint=` (an OTLP collector URL) and/or `pyroscope_endpoint=` to the `FastStreamConfig` call in `create_app()`. The OpenTelemetry middleware class (`RabbitTelemetryMiddleware`) is already plumbed in; the Pyroscope extra (`lite-bootstrap[pyroscope]`) is installed but `lite_bootstrap` only activates the profiler when the endpoint is provided. Activation is a single config edit either way.
 
 ## Error Tracking (Optional)
 
@@ -78,11 +78,11 @@ Add `sentry_dsn` to `~/.croupier.json`:
 }
 ```
 
-The `queue_name` carries a branch suffix (`-istanbul-1`) so the same string identifies the deployment across the Sentry tag, the `printer.id` composite, and the fingerprint seed. See "Per-deployment branching" below.
+The `queue_name` carries a branch suffix (`.istanbul-1`) so the same string identifies the deployment across the Sentry tag, the `printer.id` composite, and the fingerprint seed. See "Per-deployment branching" below.
 
 Leave `sentry_dsn` set to `null` (the default), or omit the key, to disable Sentry entirely. `sentry_environment` defaults to `"development"`; override to `"staging"` or `"production"` when deploying so Sentry's per-stage alert rules route correctly. The field is also passed to `FastStreamConfig.service_environment` when no DSN is set, so it surfaces in the health endpoint payload and OpenTelemetry resource attributes (when wired) regardless of Sentry state.
 
-Per-deployment branching: when running multiple instances against shared infrastructure, append a branch suffix to `queue_name` (e.g. `receipt.dispatch.istanbul-1`). The same string is reused as the Sentry `queue_name` tag, the `printer.id` prefix, and the fingerprint seed, so a unique value per deployment keeps signals separable across the fleet.
+Per-deployment branching: when running multiple instances against shared infrastructure, append a dot-delimited branch suffix to `queue_name` (e.g. `receipt.dispatch.istanbul-1`). The same string is reused as the Sentry `queue_name` tag, the `printer.id` prefix, and the fingerprint seed, so a unique value per deployment keeps signals separable across the fleet.
 
 ### Settings reference
 

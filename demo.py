@@ -6,7 +6,7 @@ from escpos.printer import Dummy
 from faststream.rabbit import RabbitQueue
 
 from croupier.main import Message
-from croupier.main import router
+from croupier.main import broker
 from croupier.main import settings
 
 
@@ -39,8 +39,8 @@ async def main() -> None:
         network_timeout=10,
     )
 
-    async with router.broker:
-        _ = await router.broker.publish(
+    async with broker:
+        _ = await broker.publish(
             message=message,
             queue=RabbitQueue(name=settings.queue_name, declare=True),
             exchange=settings.exchange_name,

@@ -1,6 +1,8 @@
+import json
 import logging
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import ClassVar
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -12,18 +14,21 @@ from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
 from faststream.rabbit import TestRabbitBroker
 from pydantic import ValidationError as PydanticValidationError
+from pydantic_settings import SettingsConfigDict
 from sentry_sdk.client import NonRecordingClient
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
 from croupier.main import Message
 from croupier.main import SentryMiddleware
+from croupier.main import Settings
 from croupier.main import broker
 from croupier.main import handle_message
 from croupier.main import settings
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from sentry_sdk.envelope import Envelope
 
@@ -165,8 +170,13 @@ class TestHandleMessageSubscriber:
             )
 
     async def test_handler_sets_printer_id_tag_and_fingerprint(
-        self, sample_message: Message
+        self, sample_message: Message, active_sentry: None
     ) -> None:
+        # ``active_sentry`` is required because ``handle_message`` now guards
+        # ``set_tag`` / ``set_context`` / ``fingerprint`` behind
+        # ``sentry_sdk.get_client().is_active()`` so the global isolation
+        # scope is not mutated when Sentry is off.
+        _ = active_sentry
         fake_iso_scope = MagicMock()
         with (
             patch("croupier.main.Network") as mock_network_cls,
@@ -186,7 +196,44 @@ class TestHandleMessageSubscriber:
         )
         assert fake_iso_scope.fingerprint == ["{{ default }}", settings.queue_name]
 
-    async def test_handler_sets_printer_context(self, sample_message: Message) -> None:
+    async def test_handler_skips_scope_mutations_when_sentry_inactive(
+        self, sample_message: Message
+    ) -> None:
+        # Pin the leak guard: when Sentry is not active, none of ``set_tag``,
+        # ``set_context``, ``add_breadcrumb``, or the fingerprint write may
+        # touch the global isolation scope. ``add_breadcrumb`` is included so
+        # the guard does not depend on the third-party invariant that
+        # ``NonRecordingClient.add_breadcrumb`` is a no-op — the test pins the
+        # call-site behavior directly. Use a plain object (not MagicMock) so
+        # attribute access does not auto-create a stub — ``hasattr`` becomes a
+        # real check that the fingerprint write never executed.
+        class _ScopeProbe:
+            pass
+
+        fake_iso_scope = _ScopeProbe()
+        with (
+            patch("croupier.main.Network") as mock_network_cls,
+            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
+            patch("croupier.main.sentry_sdk.set_context") as mock_set_context,
+            patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_add_breadcrumb,
+            patch(
+                "croupier.main.sentry_sdk.get_isolation_scope",
+                return_value=fake_iso_scope,
+            ),
+        ):
+            mock_network_cls.return_value = MagicMock()
+            async with TestRabbitBroker(broker) as br:
+                await br.publish(sample_message, queue=settings.queue_name)
+
+        mock_set_tag.assert_not_called()
+        mock_set_context.assert_not_called()
+        mock_add_breadcrumb.assert_not_called()
+        assert not hasattr(fake_iso_scope, "fingerprint")
+
+    async def test_handler_sets_printer_context(
+        self, sample_message: Message, active_sentry: None
+    ) -> None:
+        _ = active_sentry
         with (
             patch("croupier.main.Network") as mock_network_cls,
             patch("croupier.main.sentry_sdk.set_context") as mock_set_context,
@@ -205,12 +252,15 @@ class TestHandleMessageSubscriber:
         )
 
     async def test_handler_records_printer_breadcrumbs(
-        self, sample_message: Message
+        self, sample_message: Message, active_sentry: None
     ) -> None:
         # Breadcrumbs make printer-failure events diagnosable: when _raw raises,
         # the captured event must show "open" (with host/port/timeout) followed
         # by "raw" (with byte count) so the chain "connected, then send failed"
-        # is reconstructable from the Sentry UI alone.
+        # is reconstructable from the Sentry UI alone. ``active_sentry``
+        # required because the breadcrumb calls now sit behind the same
+        # ``is_active()`` guard as the scope mutations.
+        _ = active_sentry
         with (
             patch("croupier.main.Network") as mock_network_cls,
             patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_breadcrumb,
@@ -241,6 +291,35 @@ class TestHandleMessageSubscriber:
             c for c in mock_breadcrumb.call_args_list if c.kwargs["message"] == "raw"
         )
         assert raw_call.kwargs["data"] == {"bytes": len(sample_message.content)}
+
+    async def test_open_failure_records_open_breadcrumb_only(
+        self, sample_message: Message, active_sentry: None
+    ) -> None:
+        # Pin the diagnostic contract: the "open" breadcrumb is recorded
+        # before ``printer.open()``, so an open() failure must still surface
+        # it in the captured Sentry event. The "raw" breadcrumb sits inside
+        # the try/finally after open() returns and must NOT fire when open()
+        # raises — that ordering is what lets operators distinguish
+        # "TCP connect failed" from "connected then send failed" in the UI.
+        # ``active_sentry`` required because the breadcrumb calls now sit
+        # behind the same ``is_active()`` guard as the scope mutations.
+        _ = active_sentry
+        with (
+            patch("croupier.main.Network") as mock_network_cls,
+            patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_breadcrumb,
+        ):
+            mock_printer = MagicMock()
+            mock_printer.port = 9100
+            mock_printer.open.side_effect = ConnectionError("refused")
+            mock_network_cls.return_value = mock_printer
+
+            async with TestRabbitBroker(broker) as br:
+                with pytest.raises(ConnectionError, match="refused"):
+                    await br.publish(sample_message, queue=settings.queue_name)
+
+        messages = [call.kwargs["message"] for call in mock_breadcrumb.call_args_list]
+        assert "open" in messages
+        assert "raw" not in messages
 
     async def test_subscriber_closes_printer_on_exception(
         self, sample_message: Message
@@ -289,9 +368,14 @@ class TestHandleMessageSubscriber:
 
             mock_printer.close.assert_called_once()
 
-    async def test_subscriber_skips_close_when_open_fails(
+    async def test_subscriber_attempts_close_when_open_fails(
         self, sample_message: Message
     ) -> None:
+        # open() lives inside the try/finally so a failed connect still gets a
+        # close() attempt — leaves no half-open socket if open()'s failure mode
+        # was "TCP handshake completed then errored partway." close() on a
+        # never-opened printer raises AttributeError, swallowed by the narrow
+        # except in main.py. _raw() is unreachable when open() raises.
         with patch("croupier.main.Network") as mock_network_cls:
             mock_printer = MagicMock()
             mock_printer.open.side_effect = ConnectionError("refused")
@@ -302,7 +386,32 @@ class TestHandleMessageSubscriber:
                     await br.publish(sample_message, queue=settings.queue_name)
 
             mock_printer._raw.assert_not_called()
-            mock_printer.close.assert_not_called()
+            mock_printer.close.assert_called_once()
+
+    async def test_subscriber_propagates_close_runtime_error(
+        self, sample_message: Message
+    ) -> None:
+        # Pin the deliberate trade-off documented at main.py's finally block:
+        # the close-failure except is narrow (OSError, AttributeError) so
+        # broader close-time errors (e.g. RuntimeError raised by a buggy
+        # printer driver shim) are NOT swallowed. They surface and replace
+        # the original _raw() exception via Python's finally-suppression
+        # semantics. The original exception remains accessible via __context__
+        # for diagnostics, but the DLQ/Sentry fingerprint will key on the new
+        # error. Author chose visibility-of-bugs over original-error
+        # preservation here.
+        with patch("croupier.main.Network") as mock_network_cls:
+            mock_printer = MagicMock()
+            mock_printer._raw.side_effect = RuntimeError("printer offline")
+            mock_printer.close.side_effect = RuntimeError("driver bug")
+            mock_network_cls.return_value = mock_printer
+
+            async with TestRabbitBroker(broker) as br:
+                with pytest.raises(RuntimeError, match="driver bug") as exc_info:
+                    await br.publish(sample_message, queue=settings.queue_name)
+
+            assert exc_info.value.__context__ is not None
+            assert "printer offline" in str(exc_info.value.__context__)
 
     async def test_close_failure_logs_separate_error(
         self,
@@ -531,6 +640,124 @@ class TestBrokerMiddlewareWiring:
         assert result == "passthrough"
         mock_scope.assert_not_called()
         mock_capture.assert_not_called()
+
+
+class TestSettingsValidation:
+    """Pin the DSN-without-environment guard and the literal constraint on
+    ``sentry_environment``. DSN shape itself is delegated to Pydantic's
+    ``HttpUrl`` — the project no longer enforces Sentry-specific DSN structure
+    at config load.
+
+    Tests instantiate a ``Settings`` subclass whose ``json_file`` points at a
+    pytest ``tmp_path`` so the production ``JsonConfigSettingsSource`` chain
+    runs end-to-end. ``Settings.model_validate({...})`` cannot be used here
+    because ``BaseSettings`` reroutes validation through
+    ``_settings_build_values``, which still pulls fields from the configured
+    JSON source and ignores the dict.
+    """
+
+    _BASE_CONFIG: ClassVar[dict[str, str]] = {
+        "queue_url": "amqp://guest:guest@127.0.0.1",
+        "exchange_name": "x",
+        "queue_name": "x",
+        "dlx_name": "x",
+        "dlq_name": "x",
+    }
+
+    @staticmethod
+    def _build(config: dict[str, Any], tmp_path: Path) -> Settings:
+        json_path = tmp_path / ".croupier.json"
+        json_path.write_text(json.dumps(config))
+
+        class _ScopedSettings(Settings):
+            model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+                extra="ignore",
+                frozen=True,
+                json_file=json_path,
+                json_file_encoding="utf-8",
+            )
+
+        return _ScopedSettings()  # type: ignore[call-arg]
+
+    def test_sentry_dsn_accepts_well_formed(self, tmp_path: Path) -> None:
+        s = self._build(
+            {
+                **self._BASE_CONFIG,
+                "sentry_dsn": "https://public@example.com/1",
+                "sentry_environment": "production",
+            },
+            tmp_path,
+        )
+        assert s.sentry_dsn is not None
+        assert s.sentry_dsn.username == "public"
+        assert s.sentry_dsn.path == "/1"
+
+    def test_environment_defaults_to_development(self, tmp_path: Path) -> None:
+        # ``sentry_environment`` has a default of ``"development"`` so the
+        # smallest valid config covers only the broker fields. A DSN can be
+        # added without a paired environment edit — events ship under the
+        # ``development`` Sentry bucket unless the operator overrides.
+        s = self._build(self._BASE_CONFIG, tmp_path)
+        assert s.sentry_dsn is None
+        assert s.sentry_environment == "development"
+
+    def test_environment_accepts_staging_and_production(self, tmp_path: Path) -> None:
+        s = self._build(
+            {**self._BASE_CONFIG, "sentry_environment": "staging"},
+            tmp_path,
+        )
+        assert s.sentry_environment == "staging"
+        s2 = self._build(
+            {**self._BASE_CONFIG, "sentry_environment": "production"},
+            tmp_path,
+        )
+        assert s2.sentry_environment == "production"
+
+    def test_environment_rejects_invalid_literal(self, tmp_path: Path) -> None:
+        # The Literal["development","staging","production"] constraint guards
+        # alert-routing semantics: a typo like "prod" must fail loudly at
+        # config load, not silently land events in Sentry's default bucket.
+        with pytest.raises(PydanticValidationError):
+            self._build(
+                {
+                    **self._BASE_CONFIG,
+                    "sentry_dsn": "https://public@example.com/1",
+                    "sentry_environment": "prod",
+                },
+                tmp_path,
+            )
+
+    def test_extra_keys_silently_ignored(self, tmp_path: Path) -> None:
+        # extra="ignore" is deliberate — keeps configs forward
+        # compatible when fields are deprecated. Trade-off: a misspelled
+        # field name (e.g. dropping a letter from sentry_environment) is
+        # silently dropped instead of raising. Pin the policy so a future
+        # flip to "forbid" surfaces in tests, not in surprised ops.
+        s = self._build(
+            {**self._BASE_CONFIG, "snetry_environment": "production"},
+            tmp_path,
+        )
+        assert s.sentry_environment == "development"
+
+    def test_scoped_settings_subclass_overrides_parent_json_file(
+        self, tmp_path: Path
+    ) -> None:
+        # Pin the test rig: every TestSettingsValidation case relies on
+        # ``_ScopedSettings`` (subclass with its own ``model_config``)
+        # overriding ``Settings.model_config``'s ``json_file`` so the
+        # production singleton's ``~/.croupier.json`` path is bypassed. If
+        # a future Pydantic release changes how subclass ``model_config``
+        # composes with the parent, every test in this class would silently
+        # read the production settings file instead of the tmp_path JSON
+        # and assertions would degenerate. Lock the override semantics.
+        s = self._build(self._BASE_CONFIG, tmp_path)
+        assert s.queue_name == "x"
+        # ``Settings.model_config["json_file"]`` resolves to ``~/.croupier.json``
+        # at class definition; the subclass must point elsewhere or this
+        # assertion catches the regression. ``.get`` is used because
+        # ``json_file`` is non-required on ``SettingsConfigDict`` per
+        # pydantic-settings' typing.
+        assert Settings.model_config.get("json_file") != tmp_path / ".croupier.json"
 
 
 class TestDlqPropagationThroughMiddleware:

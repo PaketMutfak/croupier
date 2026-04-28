@@ -93,7 +93,7 @@ hooks = [{ id = "pyupgrade", args = ["--py314-plus"] }]
 [[repos]]
 repo = "local"
 hooks = [
-  { id = "local-mypy", name = "local-mypy", language = "system", entry = "uv run mypy", types = [
+  { id = "local-mypy", name = "local-mypy", language = "system", entry = "uv run zuban mypy", types = [
     "python",
   ], exclude_types = [
     "symlink",

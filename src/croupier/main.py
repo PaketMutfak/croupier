@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     dlx_name: str
     dlq_name: str
     sentry_dsn: HttpUrl | None = None
-    sentry_environment: Literal["development", "staging", "production"] | None = None
+    sentry_environment: Literal["development", "staging", "production"] = "development"
 
     @classmethod
     def settings_customise_sources(
@@ -79,9 +79,13 @@ class SentryMiddleware(BaseMiddleware[Any, bytes]):
         call_next: Callable[[StreamMessage[bytes]], Awaitable[Any]],
         msg: StreamMessage[bytes],
     ) -> Any:
-        # Skip wrapping when Sentry is not initialized (e.g. lite-bootstrap
-        # decided sentry_dsn was missing, or init failed). Keeps the consume
-        # path identical to the no-DSN configuration.
+        # Skip wrapping when sentry_sdk has no active client — only the
+        # ``sentry_dsn=None`` path flips ``is_active()`` to False (lite-bootstrap
+        # never calls ``sentry_sdk.init`` so the global stays a
+        # ``NonRecordingClient``). A misconfigured-but-syntactically-valid DSN
+        # leaves ``is_active()`` True with a real ``_Client``; events still try
+        # to ship and surface as transport-layer warnings, which is the loud
+        # behavior we want.
         if not sentry_sdk.get_client().is_active():
             return await call_next(msg)
         with sentry_sdk.isolation_scope():
@@ -113,97 +117,123 @@ broker = RabbitBroker(
 
 @broker.subscriber(queue=RabbitQueue(name=settings.queue_name, declare=False))
 async def handle_message(body: Message) -> None:  # noqa: RUF029
-    sentry_sdk.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
-    sentry_sdk.set_context(
-        "printer",
-        {
-            "host": body.network_host,
-            "timeout": body.network_timeout,
-            "payload_size": len(body.content),
-        },
-    )
-    # pyrefly: ignore[missing-attribute]
-    sentry_sdk.get_isolation_scope().fingerprint = [
-        "{{ default }}",
-        settings.queue_name,
-    ]
+    # Cache the active-client check so every Sentry call below sits behind the
+    # same guard. Without it, set_tag/set_context/fingerprint/add_breadcrumb
+    # would mutate the global isolation scope when SentryMiddleware short-
+    # circuited (sentry_dsn unset → NonRecordingClient) and persist across
+    # messages. Guarding add_breadcrumb explicitly removes a dependency on the
+    # third-party invariant "add_breadcrumb is a no-op on NonRecordingClient";
+    # uniform gating is easier to reason about than per-call SDK behavior.
+    sentry_active = sentry_sdk.get_client().is_active()
+    if sentry_active:
+        sentry_sdk.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
+        sentry_sdk.set_context(
+            "printer",
+            {
+                "host": body.network_host,
+                "timeout": body.network_timeout,
+                "payload_size": len(body.content),
+            },
+        )
+        # ``Scope.fingerprint`` is a setter-only property assigned dynamically
+        # in sentry-sdk; pyrefly cannot see it through the descriptor protocol
+        # and reports ``missing-attribute``.
+        # pyrefly: ignore[missing-attribute]
+        sentry_sdk.get_isolation_scope().fingerprint = [
+            "{{ default }}",
+            settings.queue_name,
+        ]
     printer = Network(
         host=body.network_host,
         timeout=body.network_timeout,
     )
-    sentry_sdk.add_breadcrumb(
-        category="printer",
-        level="info",
-        message="open",
-        data={
-            "host": body.network_host,
-            "port": printer.port,
-            "timeout": body.network_timeout,
-        },
-    )
-    printer.open()
-    sentry_sdk.add_breadcrumb(
-        category="printer",
-        level="info",
-        message="raw",
-        data={"bytes": len(body.content)},
-    )
+    if sentry_active:
+        sentry_sdk.add_breadcrumb(
+            category="printer",
+            level="info",
+            message="open",
+            data={
+                "host": body.network_host,
+                "port": printer.port,
+                "timeout": body.network_timeout,
+            },
+        )
     try:
+        # ``open()`` lives inside the try so a half-open socket from a failed
+        # connect still gets a ``close()`` attempt in the finally block
+        # (close() on a never-opened printer raises AttributeError, which the
+        # narrow except below swallows).
+        printer.open()
+        if sentry_active:
+            sentry_sdk.add_breadcrumb(
+                category="printer",
+                level="info",
+                message="raw",
+                data={"bytes": len(body.content)},
+            )
+        # python-escpos exposes only ``_raw`` for sending pre-built ESC/POS
+        # bytes. The leading underscore is a library convention, not a
+        # private-API hazard for this caller.
         printer._raw(body.content)  # noqa: SLF001  # pylint: disable=W0212
     finally:
         try:
             printer.close()
+        # PEP 758 unparenthesized except — requires Python 3.14+ (see
+        # ``requires-python`` in pyproject.toml). Equivalent to
+        # ``except (OSError, AttributeError):``; do not "fix" by adding
+        # parens unless the floor is moved below 3.14.
         except OSError, AttributeError:
-            # Preserve the original _raw() exception. close() failing on a
-            # half-broken socket would otherwise replace the real print failure
+            # Preserve the original _raw() / open() exception. close() failing
+            # on a half-broken socket would otherwise replace the real fault
             # in tracebacks and DLQ/Sentry fingerprints. Narrow to OSError
             # (socket cleanup) and AttributeError (printer state when open
-            # never completed); broader exception classes hide programming bugs.
-            # logger.exception is auto-promoted to a separate Sentry event by
-            # the SDK's default LoggingIntegration.
+            # never completed); broader exception classes hide programming
+            # bugs. logger.exception is auto-promoted to a separate Sentry
+            # event by the SDK's default LoggingIntegration.
             logger.exception("printer close failed")
 
 
-def main() -> None:
-    uvicorn.run(
-        FastStreamBootstrapper(
-            FastStreamConfig(
-                application=AsgiFastStream(broker),
-                service_name="croupier",
-                service_version="0.1.0",
-                service_environment=settings.sentry_environment,
-                # Required for the LoggingInstrument to take effect (structlog
-                # -> JSON stdout). Toggle this if a future requirement asks for
-                # plain logging in development.
-                service_debug=False,
-                sentry_dsn=(
-                    settings.sentry_dsn.unicode_string()
-                    if settings.sentry_dsn
-                    else None
-                ),
-                # Process-wide Sentry tags. lite-bootstrap calls
-                # sentry_sdk.set_tags() after init.
-                sentry_tags={"queue_name": settings.queue_name},
-                # AsyncioIntegration is NOT in sentry-sdk's default integrations
-                # set, so it has to be added explicitly. It catches unhandled
-                # exceptions in background asyncio tasks — defense in depth in
-                # case something escapes SentryMiddleware. The auto-enabled
-                # LoggingIntegration handles ERROR-and-up log records, which is
-                # how SentryMiddleware and the close-failure finally block emit
-                # their events.
-                sentry_integrations=[AsyncioIntegration()],
-                # OpenTelemetry middleware class is always passed; lite-bootstrap
-                # only initializes the tracer pipeline when an
-                # ``opentelemetry_endpoint`` is configured (default: unset),
-                # which is left to lite-bootstrap defaults — wire an OTLP
-                # collector by adding the field to FastStreamConfig here when
-                # one becomes available.
-                opentelemetry_service_name="croupier",
-                opentelemetry_middleware_cls=RabbitTelemetryMiddleware,
-                # Prometheus middleware exports per-message counters/histograms
-                # under the ``faststream`` namespace; mounted at ``/metrics``
-                # by lite-bootstrap default.
-                prometheus_middleware_cls=RabbitPrometheusMiddleware,
-            )
-        ).bootstrap()
+def create_app() -> AsgiFastStream:
+    # ASGI app factory: builds the ``FastStreamConfig`` and runs it through
+    # ``FastStreamBootstrapper`` so lite-bootstrap's instruments (Sentry,
+    # structlog, Prometheus, OTel, Pyroscope) wire themselves up. Compatible
+    # with ``uvicorn --factory``: ``uvicorn croupier.main:create_app --factory``.
+    config = FastStreamConfig(
+        application=AsgiFastStream(broker),
+        service_name="croupier",
+        service_environment=settings.sentry_environment,
+        # Required for the LoggingInstrument to take effect (structlog ->
+        # JSON stdout). Toggle if a future requirement asks for plain
+        # logging in development.
+        service_debug=False,
+        sentry_dsn=(
+            settings.sentry_dsn.unicode_string() if settings.sentry_dsn else None
+        ),
+        # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
+        # after init.
+        sentry_tags={"queue_name": settings.queue_name},
+        # AsyncioIntegration is NOT in sentry-sdk's default integrations set,
+        # so it has to be added explicitly. It catches unhandled exceptions
+        # in background asyncio tasks — defense in depth in case something
+        # escapes SentryMiddleware. The auto-enabled LoggingIntegration
+        # handles ERROR-and-up log records, which is how SentryMiddleware
+        # and the close-failure finally block emit their events.
+        sentry_integrations=[AsyncioIntegration()],
+        # OpenTelemetry middleware class is always passed; lite-bootstrap
+        # only initializes the tracer pipeline when an
+        # ``opentelemetry_endpoint`` is configured (default: unset), which
+        # is left to lite-bootstrap defaults — wire an OTLP collector by
+        # adding the field to FastStreamConfig here when one becomes
+        # available. ``opentelemetry_service_name`` is omitted:
+        # lite-bootstrap falls back to ``service_name`` above.
+        opentelemetry_middleware_cls=RabbitTelemetryMiddleware,
+        # Prometheus middleware exports per-message counters/histograms
+        # under the ``faststream`` namespace; mounted at ``/metrics`` by
+        # lite-bootstrap default.
+        prometheus_middleware_cls=RabbitPrometheusMiddleware,
     )
+    return FastStreamBootstrapper(config).bootstrap()
+
+
+def main() -> None:
+    uvicorn.run(create_app())

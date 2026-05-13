@@ -75,29 +75,26 @@ class SentryMiddleware(BaseMiddleware[Any, bytes]):
         msg: StreamMessage[bytes],
     ) -> Any:
         # Skip wrapping when sentry_sdk has no active client — only the
-        # ``sentry_dsn=None`` path flips ``is_active()`` to False (lite-bootstrap
-        # never calls ``sentry_sdk.init`` so the global stays a
+        # ``sentry_dsn=None`` path flips ``is_initialized()`` to False
+        # (lite-bootstrap never calls ``sentry_sdk.init`` so the global stays a
         # ``NonRecordingClient``). A misconfigured-but-syntactically-valid DSN
-        # leaves ``is_active()`` True with a real ``_Client``; events still try
-        # to ship and surface as transport-layer warnings, which is the loud
-        # behavior we want.
-        if not sentry_sdk.get_client().is_active():
+        # leaves ``is_initialized()`` True with a real ``_Client``; events still
+        # try to ship and surface as transport-layer warnings, which is the
+        # loud behavior we want.
+        if not sentry_sdk.is_initialized():
             return await call_next(msg)
         with sentry_sdk.isolation_scope():
             try:
                 return await call_next(msg)
             except IgnoredException:
                 raise
-            except Exception as exc:
-                # Distinguishes payload-decode failures (Pydantic ValidationError
-                # raised before handle_message runs) from in-handler errors so
-                # operators can tell whether a printer was even contacted. Tag
-                # is set on the isolation scope, so the auto-promoted Sentry
-                # event from the logger.exception below picks it up.
-                sentry_sdk.set_tag("error.class", type(exc).__name__)
+            except Exception:
                 # Sentry SDK's auto-enabled LoggingIntegration promotes
                 # ERROR-and-up records to standalone events; logger.exception
-                # is enough — no explicit capture_exception() needed.
+                # is enough — no explicit capture_exception() needed. Exception
+                # class (e.g. payload-decode ValidationError vs in-handler
+                # error) is filterable in the Sentry UI via the built-in
+                # ``error.type`` index, so no custom tag is needed.
                 logger.exception("message handler failed")
                 # Re-raise so FastStream's NACK -> DLX/DLQ path runs.
                 raise
@@ -112,60 +109,16 @@ broker = RabbitBroker(
 
 @broker.subscriber(queue=RabbitQueue(name=settings.queue_name, declare=False))
 async def handle_message(body: Message) -> None:  # noqa: RUF029
-    # Cache the active-client check so every Sentry call below sits behind the
-    # same guard. Without it, set_tag/set_context/fingerprint/add_breadcrumb
-    # would mutate the global isolation scope when SentryMiddleware short-
-    # circuited (sentry_dsn unset → NonRecordingClient) and persist across
-    # messages. Guarding add_breadcrumb explicitly removes a dependency on the
-    # third-party invariant "add_breadcrumb is a no-op on NonRecordingClient";
-    # uniform gating is easier to reason about than per-call SDK behavior.
-    sentry_active = sentry_sdk.get_client().is_active()
-    if sentry_active:
-        sentry_sdk.set_tag("printer.id", f"{settings.queue_name}:{body.network_host}")
-        sentry_sdk.set_context(
-            "printer",
-            {
-                "host": body.network_host,
-                "timeout": body.network_timeout,
-                "payload_size": len(body.content),
-            },
-        )
-        # ``Scope.fingerprint`` is a setter-only property assigned dynamically
-        # in sentry-sdk; pyrefly cannot see it through the descriptor protocol
-        # and reports ``missing-attribute``.
-        # pyrefly: ignore[missing-attribute]
-        sentry_sdk.get_isolation_scope().fingerprint = [
-            "{{ default }}",
-            settings.queue_name,
-        ]
     printer = Network(
         host=body.network_host,
         timeout=body.network_timeout,
     )
-    if sentry_active:
-        sentry_sdk.add_breadcrumb(
-            category="printer",
-            level="info",
-            message="open",
-            data={
-                "host": body.network_host,
-                "port": printer.port,
-                "timeout": body.network_timeout,
-            },
-        )
     try:
         # ``open()`` lives inside the try so a half-open socket from a failed
         # connect still gets a ``close()`` attempt in the finally block
         # (close() on a never-opened printer raises AttributeError, which the
         # narrow except below swallows).
         printer.open()
-        if sentry_active:
-            sentry_sdk.add_breadcrumb(
-                category="printer",
-                level="info",
-                message="raw",
-                data={"bytes": len(body.content)},
-            )
         # python-escpos exposes only ``_raw`` for sending pre-built ESC/POS
         # bytes. The leading underscore is a library convention, not a
         # private-API hazard for this caller.

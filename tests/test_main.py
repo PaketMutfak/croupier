@@ -660,10 +660,7 @@ class TestSettingsValidation:
 
     _BASE_CONFIG: ClassVar[dict[str, str]] = {
         "queue_url": "amqp://guest:guest@127.0.0.1",
-        "exchange_name": "x",
         "queue_name": "x",
-        "dlx_name": "x",
-        "dlq_name": "x",
     }
 
     @staticmethod

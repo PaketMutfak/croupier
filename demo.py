@@ -41,10 +41,7 @@ async def main() -> None:
 
     async with broker:
         _ = await broker.publish(
-            message=message,
-            queue=RabbitQueue(name=settings.queue_name, declare=True),
-            exchange=settings.exchange_name,
-            timeout=60,
+            message=message, queue=RabbitQueue(name=settings.queue_name, declare=True)
         )
         print("Published message")  # noqa: T201
 

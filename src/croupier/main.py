@@ -44,10 +44,7 @@ class Settings(BaseSettings):
         json_file_encoding="utf-8",
     )
     queue_url: AmqpDsn
-    exchange_name: str
     queue_name: str
-    dlx_name: str
-    dlq_name: str
     sentry_dsn: HttpUrl | None = None
     sentry_environment: Literal["development", "staging", "production"] = "development"
 
@@ -207,9 +204,6 @@ def create_app() -> AsgiFastStream:
         sentry_dsn=(
             settings.sentry_dsn.unicode_string() if settings.sentry_dsn else None
         ),
-        # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
-        # after init.
-        sentry_tags={"queue_name": settings.queue_name},
         # AsyncioIntegration is NOT in sentry-sdk's default integrations set,
         # so it has to be added explicitly. It catches unhandled exceptions
         # in background asyncio tasks — defense in depth in case something
@@ -217,6 +211,9 @@ def create_app() -> AsgiFastStream:
         # handles ERROR-and-up log records, which is how SentryMiddleware
         # and the close-failure finally block emit their events.
         sentry_integrations=[AsyncioIntegration()],
+        # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
+        # after init.
+        sentry_tags={"queue_name": settings.queue_name},
     )
     return FastStreamBootstrapper(config).bootstrap()
 

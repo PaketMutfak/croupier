@@ -53,10 +53,10 @@ def recording_transport() -> Iterator[_RecordingTransport]:
 
     Tear down by replacing the global client with a ``NonRecordingClient`` —
     ``sentry_sdk.init(dsn=None)`` does NOT deactivate the client in
-    sentry-sdk 2.x, so subsequent tests would still see ``is_active() is True``
+    sentry-sdk 2.x, so subsequent tests would still see ``is_initialized() is True``
     and the production short-circuit path could not be exercised.
 
-    Also resets the global isolation scope so fingerprint/tag mutations
+    Also resets the global isolation scope so tag mutations
     written by one test do not leak into the next.
     """
     transport = _RecordingTransport()
@@ -86,7 +86,7 @@ def active_sentry() -> Iterator[None]:
 
     Pairs with ``_reset_sentry_global_state`` (autouse) — that fixture
     deactivates by default, so any middleware test exercising the
-    ``is_active()`` short-circuit's *non-skipped* branch must opt back in.
+    ``is_initialized()`` short-circuit's *non-skipped* branch must opt back in.
     """
     sentry_sdk.init(
         dsn="https://public@example.com/1",
@@ -107,8 +107,8 @@ def _reset_sentry_global_state() -> Iterator[None]:
 
     The bootstrapped app at module import does not initialize Sentry (test
     config has ``sentry_dsn=null``), but cross-test mutation of the global
-    isolation scope (e.g. fingerprint set during a previous ``handle_message``
-    call) would still bleed into later assertions.
+    isolation scope (e.g. tags set during a previous ``handle_message`` call)
+    would still bleed into later assertions.
     """
     sentry_sdk.get_global_scope().set_client(NonRecordingClient())
     sentry_sdk.get_isolation_scope().clear()
@@ -168,158 +168,6 @@ class TestHandleMessageSubscriber:
             mock_printer._raw.assert_called_once_with(
                 b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00"
             )
-
-    async def test_handler_sets_printer_id_tag_and_fingerprint(
-        self, sample_message: Message, active_sentry: None
-    ) -> None:
-        # ``active_sentry`` is required because ``handle_message`` now guards
-        # ``set_tag`` / ``set_context`` / ``fingerprint`` behind
-        # ``sentry_sdk.get_client().is_active()`` so the global isolation
-        # scope is not mutated when Sentry is off.
-        _ = active_sentry
-        fake_iso_scope = MagicMock()
-        with (
-            patch("croupier.main.Network") as mock_network_cls,
-            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            patch("croupier.main.sentry_sdk.set_context"),
-            patch(
-                "croupier.main.sentry_sdk.get_isolation_scope",
-                return_value=fake_iso_scope,
-            ),
-        ):
-            mock_network_cls.return_value = MagicMock()
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-        mock_set_tag.assert_any_call(
-            "printer.id", f"{settings.queue_name}:192.168.1.100"
-        )
-        assert fake_iso_scope.fingerprint == ["{{ default }}", settings.queue_name]
-
-    async def test_handler_skips_scope_mutations_when_sentry_inactive(
-        self, sample_message: Message
-    ) -> None:
-        # Pin the leak guard: when Sentry is not active, none of ``set_tag``,
-        # ``set_context``, ``add_breadcrumb``, or the fingerprint write may
-        # touch the global isolation scope. ``add_breadcrumb`` is included so
-        # the guard does not depend on the third-party invariant that
-        # ``NonRecordingClient.add_breadcrumb`` is a no-op — the test pins the
-        # call-site behavior directly. Use a plain object (not MagicMock) so
-        # attribute access does not auto-create a stub — ``hasattr`` becomes a
-        # real check that the fingerprint write never executed.
-        class _ScopeProbe:
-            pass
-
-        fake_iso_scope = _ScopeProbe()
-        with (
-            patch("croupier.main.Network") as mock_network_cls,
-            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            patch("croupier.main.sentry_sdk.set_context") as mock_set_context,
-            patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_add_breadcrumb,
-            patch(
-                "croupier.main.sentry_sdk.get_isolation_scope",
-                return_value=fake_iso_scope,
-            ),
-        ):
-            mock_network_cls.return_value = MagicMock()
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-        mock_set_tag.assert_not_called()
-        mock_set_context.assert_not_called()
-        mock_add_breadcrumb.assert_not_called()
-        assert not hasattr(fake_iso_scope, "fingerprint")
-
-    async def test_handler_sets_printer_context(
-        self, sample_message: Message, active_sentry: None
-    ) -> None:
-        _ = active_sentry
-        with (
-            patch("croupier.main.Network") as mock_network_cls,
-            patch("croupier.main.sentry_sdk.set_context") as mock_set_context,
-        ):
-            mock_network_cls.return_value = MagicMock()
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-        mock_set_context.assert_any_call(
-            "printer",
-            {
-                "host": "192.168.1.100",
-                "timeout": 10,
-                "payload_size": len(sample_message.content),
-            },
-        )
-
-    async def test_handler_records_printer_breadcrumbs(
-        self, sample_message: Message, active_sentry: None
-    ) -> None:
-        # Breadcrumbs make printer-failure events diagnosable: when _raw raises,
-        # the captured event must show "open" (with host/port/timeout) followed
-        # by "raw" (with byte count) so the chain "connected, then send failed"
-        # is reconstructable from the Sentry UI alone. ``active_sentry``
-        # required because the breadcrumb calls now sit behind the same
-        # ``is_active()`` guard as the scope mutations.
-        _ = active_sentry
-        with (
-            patch("croupier.main.Network") as mock_network_cls,
-            patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_breadcrumb,
-        ):
-            mock_printer = MagicMock()
-            # Breadcrumb pulls the port off the Network instance; mock it
-            # explicitly so the breadcrumb data assertion stays exact.
-            mock_printer.port = 9100
-            mock_network_cls.return_value = mock_printer
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-        categories_messages = [
-            (call.kwargs["category"], call.kwargs["message"])
-            for call in mock_breadcrumb.call_args_list
-        ]
-        assert ("printer", "open") in categories_messages
-        assert ("printer", "raw") in categories_messages
-        open_call = next(
-            c for c in mock_breadcrumb.call_args_list if c.kwargs["message"] == "open"
-        )
-        assert open_call.kwargs["data"] == {
-            "host": "192.168.1.100",
-            "port": 9100,
-            "timeout": 10,
-        }
-        raw_call = next(
-            c for c in mock_breadcrumb.call_args_list if c.kwargs["message"] == "raw"
-        )
-        assert raw_call.kwargs["data"] == {"bytes": len(sample_message.content)}
-
-    async def test_open_failure_records_open_breadcrumb_only(
-        self, sample_message: Message, active_sentry: None
-    ) -> None:
-        # Pin the diagnostic contract: the "open" breadcrumb is recorded
-        # before ``printer.open()``, so an open() failure must still surface
-        # it in the captured Sentry event. The "raw" breadcrumb sits inside
-        # the try/finally after open() returns and must NOT fire when open()
-        # raises — that ordering is what lets operators distinguish
-        # "TCP connect failed" from "connected then send failed" in the UI.
-        # ``active_sentry`` required because the breadcrumb calls now sit
-        # behind the same ``is_active()`` guard as the scope mutations.
-        _ = active_sentry
-        with (
-            patch("croupier.main.Network") as mock_network_cls,
-            patch("croupier.main.sentry_sdk.add_breadcrumb") as mock_breadcrumb,
-        ):
-            mock_printer = MagicMock()
-            mock_printer.port = 9100
-            mock_printer.open.side_effect = ConnectionError("refused")
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                with pytest.raises(ConnectionError, match="refused"):
-                    await br.publish(sample_message, queue=settings.queue_name)
-
-        messages = [call.kwargs["message"] for call in mock_breadcrumb.call_args_list]
-        assert "open" in messages
-        assert "raw" not in messages
 
     async def test_subscriber_closes_printer_on_exception(
         self, sample_message: Message
@@ -449,7 +297,7 @@ class TestSentryMiddleware:
     """Tests for the AMQP SentryMiddleware.
 
     All tests in this class use ``active_sentry`` (autouse) — middleware
-    short-circuits via ``is_active()`` when Sentry is not initialized, and
+    short-circuits via ``is_initialized()`` when Sentry is not initialized, and
     the global ``_reset_sentry_global_state`` fixture deactivates by default.
     """
 
@@ -537,26 +385,15 @@ class TestSentryMiddleware:
         assert "scope_id" not in _scope_tags(inner_scopes[1])
         assert "scope_id" not in _scope_tags(outer_scope)
 
-    async def test_tags_exception_class_before_log(
-        self, stream_message: StreamMessage[bytes]
-    ) -> None:
-        async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
-            raise ValueError
-
-        middleware = SentryMiddleware(None, context=MagicMock())
-        with (
-            patch("croupier.main.sentry_sdk.set_tag") as mock_set_tag,
-            pytest.raises(ValueError),  # noqa: PT011
-        ):
-            await middleware.consume_scope(call_next, stream_message)
-        mock_set_tag.assert_any_call("error.class", "ValueError")
-
-    async def test_event_payload_carries_error_class_tag(
+    async def test_event_payload_carries_native_exception_type(
         self,
         stream_message: StreamMessage[bytes],
         recording_transport: _RecordingTransport,
     ) -> None:
-        # Pin actual event payload, not just the set_tag call args.
+        # Sentry's built-in ``error.type`` index covers exception-class
+        # filtering, so the middleware no longer sets a custom tag — the
+        # auto-promoted event still carries the exception type natively under
+        # ``exception.values[].type``.
         async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
             msg = "printer offline"
             raise RuntimeError(msg)
@@ -567,29 +404,11 @@ class TestSentryMiddleware:
         sentry_sdk.flush(timeout=2)
 
         assert recording_transport.events, "no event reached transport"
-        tags = recording_transport.events[0].get("tags", {})
-        assert tags.get("error.class") == "RuntimeError"
-
-    async def test_payload_decode_error_uses_default_fingerprint(
-        self,
-        stream_message: StreamMessage[bytes],
-        recording_transport: _RecordingTransport,
-    ) -> None:
-        # Errors raised before handle_message runs (e.g. Pydantic ValidationError
-        # from a malformed AMQP body) must NOT carry the queue_name fingerprint
-        # seed — handle_message is where that fingerprint is set, and decode
-        # errors never reach handle_message.
-        async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
-            Message.model_validate_json(b"{}")
-
-        middleware = SentryMiddleware(None, context=MagicMock())
-        with pytest.raises(PydanticValidationError):
-            await middleware.consume_scope(call_next, stream_message)
-        sentry_sdk.flush(timeout=2)
-
-        assert recording_transport.events, "no event reached transport"
-        fingerprint = recording_transport.events[0].get("fingerprint", [])
-        assert settings.queue_name not in fingerprint
+        exception_values = recording_transport.events[0].get("exception", {}).get(
+            "values", []
+        )
+        assert exception_values, "event missing exception payload"
+        assert exception_values[0].get("type") == "RuntimeError"
 
 
 def _scope_tags(scope: sentry_sdk.Scope) -> dict[str, object]:
@@ -627,8 +446,8 @@ class TestBrokerMiddlewareWiring:
         # Even when SentryMiddleware is wired into the broker (because
         # sentry_dsn was set in config), it must not open isolation_scope or
         # call capture when sentry_sdk init never succeeded — covered by the
-        # is_active() check at the top of consume_scope.
-        assert sentry_sdk.get_client().is_active() is False
+        # is_initialized() check at the top of consume_scope.
+        assert sentry_sdk.is_initialized() is False
         mw = SentryMiddleware(None, context=MagicMock())
 
         async def call_next(_msg: StreamMessage[bytes]) -> str:  # noqa: RUF029

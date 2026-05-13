@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Croupier
 
-Croupier is a receipt printing microservice. It consumes ESC/POS receipt messages from a RabbitMQ queue and forwards raw bytes to network thermal printers. Receipts arrive only via the queue — there is no HTTP receipt-ingress route. (Operational HTTP surface — `/health/` and `/metrics` — is mounted by lite-bootstrap.)
+Croupier is a receipt printing microservice. It consumes ESC/POS receipt messages from a RabbitMQ queue and forwards raw bytes to network thermal printers. Receipts arrive only via the queue — there is no HTTP receipt-ingress route. (Operational HTTP surface — `/health/` — is mounted by lite-bootstrap.)
 
 ## Python Version
 
@@ -53,9 +53,8 @@ All application logic lives in `src/croupier/main.py` — a single-module design
 - **SentryMiddleware** — Custom `BaseMiddleware[Any, bytes]` registered conditionally on the broker (only when `sentry_dsn` is set). Opens a per-message `sentry_sdk.isolation_scope()`, tags `error.class`, calls `logger.exception`, and re-raises. Short-circuits to a passthrough when `sentry_sdk.get_client().is_active()` is `False`.
 - **Printing** — Uses `python-escpos` `Network` printer. `open()` and `_raw()` run inside a `try/finally` so a half-open socket from a failed connect still gets a `close()` attempt. Close-failure narrow-except uses PEP 758 unparenthesized form (`except OSError, AttributeError:`) — broader exceptions intentionally surface (programming-bug visibility trade-off).
 - **Health** — `GET /health/` — payload comes from lite-bootstrap (no override).
-- **Metrics** — `/metrics` Prometheus endpoint exporting per-message FastStream counters/histograms via `RabbitPrometheusMiddleware`.
 - **Logging** — structlog → JSON on stdout via lite-bootstrap's `LoggingInstrument` (`service_debug=False`). No file handler, no rotating logs.
-- **OpenTelemetry / Pyroscope** — `RabbitTelemetryMiddleware` is wired and the `lite-bootstrap[pyroscope]` extra is installed; both stay inert until their endpoints are configured on `FastStreamConfig`.
+- **Pyroscope** — `lite-bootstrap[pyroscope]` extra is installed; profiler stays inert until `pyroscope_endpoint` is configured on `FastStreamConfig`. Edge-friendly (outbound push), so branch deployments can opt in without inbound firewall changes.
 - **AsyncioIntegration** — Registered explicitly via `FastStreamConfig.sentry_integrations` (not in sentry-sdk's default set); catches unhandled exceptions in background asyncio tasks.
 
 `main.py` at the project root is just the entrypoint that calls `croupier.main.main()`, which runs `uvicorn.run(create_app())`.
@@ -74,7 +73,7 @@ Sentry tests use a `_RecordingTransport` plus `sentry_sdk.init(...)` per-test. A
 
 - **uvicorn** — ASGI server (the worker is an `AsgiFastStream` app)
 - **FastStream[rabbit]** — RabbitMQ consumer/producer via `aio-pika`
-- **lite-bootstrap[faststream-all,pyroscope]** — composes Sentry + structlog + Prometheus + OTel + Pyroscope behind one `FastStreamConfig` object
+- **lite-bootstrap[faststream-logging,faststream-sentry,pyroscope]** — composes Sentry + structlog + Pyroscope behind one `FastStreamConfig` object. Prometheus and OpenTelemetry extras intentionally omitted: Croupier runs on branch computers (NAT'd edge hosts) where pull-based scraping is impractical and there are no downstream hops to stitch into traces.
 - **sentry-sdk** — error tracking (transitively via `lite-bootstrap`)
 - **python-escpos** — ESC/POS printer protocol
 - **pydantic-settings** — JSON-file-based configuration

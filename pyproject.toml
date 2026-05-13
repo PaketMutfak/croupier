@@ -8,8 +8,8 @@ authors = [{ name = "Hasan Sezer Taşan", email = "hasansezertasan@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
   "faststream[rabbit]==0.6.7",
-  "lite-bootstrap[faststream-all,pyroscope]==0.25.4",
-  "pydantic-settings==2.14.0",
+  "lite-bootstrap[faststream-logging,faststream-sentry,pyroscope]==0.28.0",
+  "pydantic-settings==2.14.1",
   "python-escpos==3.1",
   "uvicorn==0.46.0",
 ]

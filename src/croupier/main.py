@@ -16,6 +16,16 @@ from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
 from lite_bootstrap import FastStreamBootstrapper
 from lite_bootstrap import FastStreamConfig
+from lite_bootstrap import PyroscopeInstrument
+from lite_bootstrap.bootstrappers.faststream_bootstrapper import (
+    FastStreamHealthChecksInstrument,
+)
+from lite_bootstrap.bootstrappers.faststream_bootstrapper import (
+    FastStreamLoggingInstrument,
+)
+from lite_bootstrap.bootstrappers.faststream_bootstrapper import (
+    FastStreamSentryInstrument,
+)
 from pydantic import AmqpDsn
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -105,6 +115,25 @@ class SentryMiddleware(BaseMiddleware[Any, bytes]):
                 raise
 
 
+class _Bootstrapper(FastStreamBootstrapper):
+    # Workaround for lite-bootstrap 0.28.0: FastStreamPrometheusInstrument's
+    # __init__ unconditionally evaluates a ``default_factory`` that touches
+    # ``prometheus_client``, which is gated behind ``is_prometheus_client_installed``.
+    # When the ``prometheus`` extra is not installed (intentional for Croupier
+    # because branch hosts sit behind NAT and pull-based scraping is impractical),
+    # the symbol is unbound and instantiation raises ``NameError`` *before*
+    # ``check_dependencies()`` gets a chance to short-circuit. Whitelisting the
+    # instruments we actually use sidesteps the bug and matches the dependency
+    # set declared in ``pyproject.toml``. Remove once upstream evaluates
+    # ``check_dependencies()`` before instantiation.
+    instruments_types: ClassVar = [  # pyright: ignore[reportIncompatibleVariableOverride]
+        PyroscopeInstrument,
+        FastStreamSentryInstrument,
+        FastStreamHealthChecksInstrument,
+        FastStreamLoggingInstrument,
+    ]
+
+
 settings = Settings()  # type: ignore[call-arg]
 broker = RabbitBroker(
     settings.queue_url.unicode_string(),
@@ -172,8 +201,15 @@ def create_app() -> AsgiFastStream:
         # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
         # after init.
         sentry_tags={"queue_name": settings.queue_name},
+        # Workaround for lite-bootstrap 0.28.0: the health-check bootstrap
+        # path unconditionally references a module-level ``tracer`` symbol
+        # that is only bound when the ``opentelemetry`` extra is installed.
+        # The OTel extra is intentionally omitted (see ``pyproject.toml``);
+        # the default ``True`` therefore raises ``NameError`` at bootstrap.
+        # Remove once upstream guards the reference.
+        opentelemetry_generate_health_check_spans=False,
     )
-    return FastStreamBootstrapper(config).bootstrap()
+    return _Bootstrapper(config).bootstrap()
 
 
 def main() -> None:

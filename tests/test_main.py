@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 import sentry_sdk
+from faststream.asgi import AsgiFastStream
 from faststream.exceptions import IgnoredException
 from faststream.message import StreamMessage
 from faststream.rabbit import RabbitBroker
@@ -23,6 +24,7 @@ from croupier.main import Message
 from croupier.main import SentryMiddleware
 from croupier.main import Settings
 from croupier.main import broker
+from croupier.main import create_app
 from croupier.main import handle_message
 from croupier.main import settings
 
@@ -307,7 +309,13 @@ class TestSentryMiddleware:
 
     @pytest.fixture
     def stream_message(self) -> StreamMessage[bytes]:
-        return MagicMock(spec=StreamMessage)
+        # ``correlation_id`` is set on the StreamMessage instance (not as a
+        # class attribute), so ``MagicMock(spec=...)`` does not expose it.
+        # Pin a concrete value because SentryMiddleware reads it for the
+        # per-message tag.
+        msg = MagicMock(spec=StreamMessage)
+        msg.correlation_id = "test-correlation-id"
+        return msg
 
     async def test_logs_exception_and_reraises(
         self,
@@ -404,11 +412,36 @@ class TestSentryMiddleware:
         sentry_sdk.flush(timeout=2)
 
         assert recording_transport.events, "no event reached transport"
-        exception_values = recording_transport.events[0].get("exception", {}).get(
-            "values", []
+        exception_values = (
+            recording_transport.events[0].get("exception", {}).get("values", [])
         )
         assert exception_values, "event missing exception payload"
         assert exception_values[0].get("type") == "RuntimeError"
+
+    async def test_event_payload_carries_correlation_id_tag(
+        self,
+        stream_message: StreamMessage[bytes],
+        recording_transport: _RecordingTransport,
+    ) -> None:
+        # The middleware tags the per-message isolation scope with
+        # ``correlation_id`` so a Sentry event can be pivoted from a log line
+        # carrying the same field in one filter.
+        async def call_next(_msg: StreamMessage[bytes]) -> None:  # noqa: RUF029
+            msg = "printer offline"
+            raise RuntimeError(msg)
+
+        middleware = SentryMiddleware(None, context=MagicMock())
+        with pytest.raises(RuntimeError, match="printer offline"):
+            await middleware.consume_scope(call_next, stream_message)
+        sentry_sdk.flush(timeout=2)
+
+        assert recording_transport.events, "no event reached transport"
+        tags = recording_transport.events[0].get("tags") or {}
+        # ``tags`` may be a dict or a list of [key, value] pairs depending on
+        # SDK version — normalize before asserting.
+        if isinstance(tags, list):
+            tags = dict(tags)
+        assert tags.get("correlation_id") == "test-correlation-id"
 
 
 def _scope_tags(scope: sentry_sdk.Scope) -> dict[str, object]:
@@ -461,6 +494,22 @@ class TestBrokerMiddlewareWiring:
         assert result == "passthrough"
         mock_scope.assert_not_called()
         mock_capture.assert_not_called()
+
+
+class TestCreateApp:
+    """Smoke-test the bootstrap wiring.
+
+    Pins the lite-bootstrap 0.28.0 workaround: the bundled
+    ``FastStreamBootstrapper`` instantiates ``FastStreamPrometheusInstrument``
+    before checking dependencies, which raises ``NameError`` when the
+    ``prometheus`` extra is intentionally omitted. ``create_app`` uses a
+    subclass that whitelists only the instruments that match the declared
+    dependency set; this test would fail with the upstream class.
+    """
+
+    def test_create_app_returns_asgi_faststream(self) -> None:
+        app = create_app()
+        assert isinstance(app, AsgiFastStream)
 
 
 class TestSettingsValidation:

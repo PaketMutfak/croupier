@@ -83,7 +83,12 @@ class SentryMiddleware(BaseMiddleware[Any, bytes]):
         # loud behavior we want.
         if not sentry_sdk.is_initialized():
             return await call_next(msg)
-        with sentry_sdk.isolation_scope():
+        with sentry_sdk.isolation_scope() as scope:
+            # Per-message correlation_id as a searchable tag so a log line
+            # carrying ``correlation_id=...`` can be pivoted to the matching
+            # Sentry event in one filter. High cardinality is fine here —
+            # the index is used for lookup, never for groupby aggregation.
+            scope.set_tag("correlation_id", msg.correlation_id)
             try:
                 return await call_next(msg)
             except IgnoredException:

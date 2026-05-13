@@ -60,15 +60,6 @@ All application logic lives in `src/croupier/main.py` — a single-module design
 
 `create_app() -> AsgiFastStream` is the ASGI app factory: builds the `FastStreamConfig`, runs it through `_Bootstrapper` (a `FastStreamBootstrapper` subclass), and returns the bootstrapped ASGI app. Compatible with `uvicorn --factory`: `uvicorn croupier.main:create_app --factory`. Bootstrap reconfigures global state (structlog, Sentry init); call once per process.
 
-### lite-bootstrap 0.28.0 workarounds
-
-The pinned `lite-bootstrap` release has two NameError bugs in the FastStream bootstrapper path that the `prometheus` / `opentelemetry` extras would mask. Croupier intentionally omits both extras (edge-host deployment, see Key Dependencies), so the bugs are reachable and are pinned in code:
-
-1. **`FastStreamPrometheusInstrument` `__init__` crash** — the dataclass `default_factory` calls `prometheus_client.CollectorRegistry()` before `check_dependencies()` is consulted; the symbol is unbound when the extra is missing. Worked around by `_Bootstrapper`, a `FastStreamBootstrapper` subclass whose `instruments_types` whitelists only `FastStreamSentryInstrument`, `FastStreamHealthChecksInstrument`, `FastStreamLoggingInstrument` — the three that match the declared extras.
-2. **Health-check `tracer` reference** — `FastStreamHealthChecksInstrument.bootstrap` references the module-level `tracer` symbol whenever `opentelemetry_generate_health_check_spans` is `True` (the upstream default). The symbol is gated behind `is_opentelemetry_installed`. Worked around by passing `opentelemetry_generate_health_check_spans=False` on the `FastStreamConfig` in `create_app`.
-
-Both are short, commented in `main.py`, and should be deleted when upstream evaluates `check_dependencies()` before instantiation and guards the `tracer` reference.
-
 ## Testing
 
 Tests use `faststream.rabbit.TestRabbitBroker` to simulate RabbitMQ in-memory (no broker needed). The `Network` printer is mocked by patching `croupier.main.Network` (not `escpos.printer.Network`). pytest-asyncio is configured with `asyncio_mode = "auto"`.

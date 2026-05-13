@@ -14,8 +14,6 @@ from faststream.asgi import AsgiFastStream
 from faststream.exceptions import IgnoredException
 from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
-from faststream.rabbit.opentelemetry import RabbitTelemetryMiddleware
-from faststream.rabbit.prometheus import RabbitPrometheusMiddleware
 from lite_bootstrap import FastStreamBootstrapper
 from lite_bootstrap import FastStreamConfig
 from pydantic import AmqpDsn
@@ -196,8 +194,8 @@ async def handle_message(body: Message) -> None:  # noqa: RUF029
 def create_app() -> AsgiFastStream:
     # ASGI app factory: builds the ``FastStreamConfig`` and runs it through
     # ``FastStreamBootstrapper`` so lite-bootstrap's instruments (Sentry,
-    # structlog, Prometheus, OTel, Pyroscope) wire themselves up. Compatible
-    # with ``uvicorn --factory``: ``uvicorn croupier.main:create_app --factory``.
+    # structlog, Pyroscope) wire themselves up. Compatible with
+    # ``uvicorn --factory``: ``uvicorn croupier.main:create_app --factory``.
     config = FastStreamConfig(
         application=AsgiFastStream(broker),
         service_name="croupier",
@@ -219,18 +217,6 @@ def create_app() -> AsgiFastStream:
         # handles ERROR-and-up log records, which is how SentryMiddleware
         # and the close-failure finally block emit their events.
         sentry_integrations=[AsyncioIntegration()],
-        # OpenTelemetry middleware class is always passed; lite-bootstrap
-        # only initializes the tracer pipeline when an
-        # ``opentelemetry_endpoint`` is configured (default: unset), which
-        # is left to lite-bootstrap defaults — wire an OTLP collector by
-        # adding the field to FastStreamConfig here when one becomes
-        # available. ``opentelemetry_service_name`` is omitted:
-        # lite-bootstrap falls back to ``service_name`` above.
-        opentelemetry_middleware_cls=RabbitTelemetryMiddleware,
-        # Prometheus middleware exports per-message counters/histograms
-        # under the ``faststream`` namespace; mounted at ``/metrics`` by
-        # lite-bootstrap default.
-        prometheus_middleware_cls=RabbitPrometheusMiddleware,
     )
     return FastStreamBootstrapper(config).bootstrap()
 

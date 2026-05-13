@@ -51,12 +51,13 @@ Croupier is a FastStream RabbitMQ subscriber wrapped by [`lite-bootstrap`](https
 - Sentry init (opt-in, see below)
 - structlog → JSON-on-stdout logging (replaces the previous `~/.croupier.log` file handler)
 - A `/health/` endpoint that pings the broker (lite-bootstrap default; not overridden)
-- A `/metrics` Prometheus endpoint exporting per-message FastStream counters / histograms
 - An ASGI surface (`AsgiFastStream`) so the worker runs under `uvicorn`
 
 There is no FastAPI HTTP route. Receipts arrive only via the RabbitMQ queue declared at startup. The `POST /handle-message` route that earlier versions exposed has been removed.
 
-OpenTelemetry tracing and Pyroscope continuous profiling stay inert until their endpoints are set: add `opentelemetry_endpoint=` (an OTLP collector URL) and/or `pyroscope_endpoint=` to the `FastStreamConfig` call in `create_app()`. The OpenTelemetry middleware class (`RabbitTelemetryMiddleware`) is already plumbed in; the Pyroscope extra (`lite-bootstrap[pyroscope]`) is installed but `lite_bootstrap` only activates the profiler when the endpoint is provided. Activation is a single config edit either way.
+Prometheus metrics and OpenTelemetry tracing are intentionally not wired. Croupier runs on branch computers (NAT'd edge hosts): a `/metrics` endpoint cannot be scraped from a central Prometheus, and the service is a leaf — AMQP in, raw TCP bytes to the printer — so distributed traces have no downstream hops to stitch. Sentry (push, outbound HTTPS) and structlog JSON-on-stdout are the supported observability surface.
+
+Pyroscope continuous profiling stays inert until its endpoint is set: add `pyroscope_endpoint=` to the `FastStreamConfig` call in `create_app()`. The `lite-bootstrap[pyroscope]` extra is installed; `lite_bootstrap` only activates the profiler when the endpoint is provided. Pyroscope is push-based (outbound), so it is edge-friendly if you decide to enable it.
 
 ## Error Tracking (Optional)
 
@@ -80,7 +81,7 @@ Add `sentry_dsn` to `~/.croupier.json`:
 
 The `queue_name` carries a branch suffix (`.istanbul-1`) so the same string identifies the deployment across the Sentry tag, the `printer.id` composite, and the fingerprint seed. See "Per-deployment branching" below.
 
-Leave `sentry_dsn` set to `null` (the default), or omit the key, to disable Sentry entirely. `sentry_environment` defaults to `"development"`; override to `"staging"` or `"production"` when deploying so Sentry's per-stage alert rules route correctly. The field is also passed to `FastStreamConfig.service_environment` when no DSN is set, so it surfaces in the health endpoint payload and OpenTelemetry resource attributes (when wired) regardless of Sentry state.
+Leave `sentry_dsn` set to `null` (the default), or omit the key, to disable Sentry entirely. `sentry_environment` defaults to `"development"`; override to `"staging"` or `"production"` when deploying so Sentry's per-stage alert rules route correctly. The field is also passed to `FastStreamConfig.service_environment` when no DSN is set, so it surfaces in the health endpoint payload regardless of Sentry state.
 
 Per-deployment branching: when running multiple instances against shared infrastructure, append a dot-delimited branch suffix to `queue_name` (e.g. `receipt.dispatch.istanbul-1`). The same string is reused as the Sentry `queue_name` tag, the `printer.id` prefix, and the fingerprint seed, so a unique value per deployment keeps signals separable across the fleet.
 
@@ -89,7 +90,7 @@ Per-deployment branching: when running multiple instances against shared infrast
 | Field | Type | Default | Purpose |
 |---|---|---|---|
 | `sentry_dsn` | `HttpUrl \| null` | `null` | Sentry project DSN. `null` disables Sentry; in that case `lite-bootstrap` skips `sentry_sdk.init` and `SentryMiddleware` is not registered on the broker. Validated only as an `HttpUrl` at config load — Sentry-specific shape (public key, project id) is left to `sentry-sdk`'s own runtime warnings. |
-| `sentry_environment` | `Literal["development", "staging", "production"]` | `"development"` | Deploy stage; mapped to `service_environment` on `FastStreamConfig` so it propagates to Sentry events, the health endpoint payload, and (when added later) OpenTelemetry resource attributes. Default keeps the smallest config valid; override per deploy stage so Sentry alert routing matches reality. |
+| `sentry_environment` | `Literal["development", "staging", "production"]` | `"development"` | Deploy stage; mapped to `service_environment` on `FastStreamConfig` so it propagates to Sentry events and the health endpoint payload. Default keeps the smallest config valid; override per deploy stage so Sentry alert routing matches reality. |
 
 `queue_name` is reused as the per-deployment identifier across all Sentry signals (tag, `printer.id` composite, fingerprint seed) — see the bullets below for details.
 

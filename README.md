@@ -55,9 +55,7 @@ Croupier is a FastStream RabbitMQ subscriber wrapped by [`lite-bootstrap`](https
 
 There is no FastAPI HTTP route. Receipts arrive only via the RabbitMQ queue declared at startup. The `POST /handle-message` route that earlier versions exposed has been removed.
 
-Prometheus metrics and OpenTelemetry tracing are intentionally not wired. Croupier runs on branch computers (NAT'd edge hosts): a `/metrics` endpoint cannot be scraped from a central Prometheus, and the service is a leaf — AMQP in, raw TCP bytes to the printer — so distributed traces have no downstream hops to stitch. Sentry (push, outbound HTTPS) and structlog JSON-on-stdout are the supported observability surface.
-
-Pyroscope continuous profiling stays inert until its endpoint is set: add `pyroscope_endpoint=` to the `FastStreamConfig` call in `create_app()`. The `lite-bootstrap[pyroscope]` extra is installed; `lite_bootstrap` only activates the profiler when the endpoint is provided. Pyroscope is push-based (outbound), so it is edge-friendly if you decide to enable it.
+Prometheus metrics, OpenTelemetry tracing, and Pyroscope profiling are intentionally not wired. Croupier runs on branch computers (NAT'd edge hosts): a `/metrics` endpoint cannot be scraped from a central Prometheus, and the service is a leaf — AMQP in, raw TCP bytes to the printer — so distributed traces have no downstream hops to stitch. Sentry (push, outbound HTTPS) and structlog JSON-on-stdout are the supported observability surface. Continuous profiling (Pyroscope) is tracked as future work in [#46](https://github.com/PaketMutfak/croupier/issues/46).
 
 ## Error Tracking (Optional)
 

@@ -4,10 +4,7 @@ from pathlib import Path
 _CONFIG_PATH = Path.home() / ".croupier.json"
 _TEST_CONFIG = {
     "queue_url": "amqp://guest:guest@127.0.0.1",
-    "exchange_name": "test.receipt.dispatch",
     "queue_name": "test.receipt.dispatch",
-    "dlx_name": "test.receipt.dispatch.dlx",
-    "dlq_name": "test.receipt.dispatch.dlq",
 }
 
 

@@ -70,10 +70,7 @@ Add `sentry_dsn` to `~/.croupier.json`:
 ```json
 {
     "queue_url": "amqp://guest:guest@127.0.0.1",
-    "exchange_name": "receipt.dispatch",
     "queue_name": "receipt.dispatch.istanbul-1",
-    "dlx_name": "receipt.dispatch.dlx",
-    "dlq_name": "receipt.dispatch.dlq",
     "sentry_dsn": "https://<key>@<org>.ingest.sentry.io/<project>",
     "sentry_environment": "production"
 }

@@ -54,7 +54,6 @@ All application logic lives in `src/croupier/main.py` — a single-module design
 - **Printing** — Uses `python-escpos` `Network` printer. `open()` and `_raw()` run inside a `try/finally` so a half-open socket from a failed connect still gets a `close()` attempt. Close-failure narrow-except uses PEP 758 unparenthesized form (`except OSError, AttributeError:`) — broader exceptions intentionally surface (programming-bug visibility trade-off).
 - **Health** — `GET /health/` — payload comes from lite-bootstrap (no override).
 - **Logging** — structlog → JSON on stdout via lite-bootstrap's `LoggingInstrument` (`service_debug=False`). No file handler, no rotating logs.
-- **Pyroscope** — `lite-bootstrap[pyroscope]` extra is installed; profiler stays inert until `pyroscope_endpoint` is configured on `FastStreamConfig`. Edge-friendly (outbound push), so branch deployments can opt in without inbound firewall changes.
 - **AsyncioIntegration** — Registered explicitly via `FastStreamConfig.sentry_integrations` (not in sentry-sdk's default set); catches unhandled exceptions in background asyncio tasks.
 
 `main.py` at the project root is just the entrypoint that calls `croupier.main.main()`, which runs `uvicorn.run(create_app())`.
@@ -65,7 +64,7 @@ All application logic lives in `src/croupier/main.py` — a single-module design
 
 The pinned `lite-bootstrap` release has two NameError bugs in the FastStream bootstrapper path that the `prometheus` / `opentelemetry` extras would mask. Croupier intentionally omits both extras (edge-host deployment, see Key Dependencies), so the bugs are reachable and are pinned in code:
 
-1. **`FastStreamPrometheusInstrument` `__init__` crash** — the dataclass `default_factory` calls `prometheus_client.CollectorRegistry()` before `check_dependencies()` is consulted; the symbol is unbound when the extra is missing. Worked around by `_Bootstrapper`, a `FastStreamBootstrapper` subclass whose `instruments_types` whitelists only `PyroscopeInstrument`, `FastStreamSentryInstrument`, `FastStreamHealthChecksInstrument`, `FastStreamLoggingInstrument` — the four that match the declared extras.
+1. **`FastStreamPrometheusInstrument` `__init__` crash** — the dataclass `default_factory` calls `prometheus_client.CollectorRegistry()` before `check_dependencies()` is consulted; the symbol is unbound when the extra is missing. Worked around by `_Bootstrapper`, a `FastStreamBootstrapper` subclass whose `instruments_types` whitelists only `FastStreamSentryInstrument`, `FastStreamHealthChecksInstrument`, `FastStreamLoggingInstrument` — the three that match the declared extras.
 2. **Health-check `tracer` reference** — `FastStreamHealthChecksInstrument.bootstrap` references the module-level `tracer` symbol whenever `opentelemetry_generate_health_check_spans` is `True` (the upstream default). The symbol is gated behind `is_opentelemetry_installed`. Worked around by passing `opentelemetry_generate_health_check_spans=False` on the `FastStreamConfig` in `create_app`.
 
 Both are short, commented in `main.py`, and should be deleted when upstream evaluates `check_dependencies()` before instantiation and guards the `tracer` reference.
@@ -82,7 +81,7 @@ Sentry tests use a `_RecordingTransport` plus `sentry_sdk.init(...)` per-test. A
 
 - **uvicorn** — ASGI server (the worker is an `AsgiFastStream` app)
 - **FastStream[rabbit]** — RabbitMQ consumer/producer via `aio-pika`
-- **lite-bootstrap[faststream-logging,faststream-sentry,pyroscope]** — composes Sentry + structlog + Pyroscope behind one `FastStreamConfig` object. Prometheus and OpenTelemetry extras intentionally omitted: Croupier runs on branch computers (NAT'd edge hosts) where pull-based scraping is impractical and there are no downstream hops to stitch into traces.
+- **lite-bootstrap[faststream-logging,faststream-sentry]** — composes Sentry + structlog behind one `FastStreamConfig` object. Prometheus, OpenTelemetry, and Pyroscope extras intentionally omitted: Croupier runs on branch computers (NAT'd edge hosts) where pull-based scraping is impractical and there are no downstream hops to stitch into traces. Continuous profiling (Pyroscope) is tracked as future work in [#46](https://github.com/PaketMutfak/croupier/issues/46).
 - **sentry-sdk** — error tracking (transitively via `lite-bootstrap`)
 - **python-escpos** — ESC/POS printer protocol
 - **pydantic-settings** — JSON-file-based configuration

@@ -16,7 +16,6 @@ from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
 from lite_bootstrap import FastStreamBootstrapper
 from lite_bootstrap import FastStreamConfig
-from lite_bootstrap import PyroscopeInstrument
 from lite_bootstrap.bootstrappers.faststream_bootstrapper import (
     FastStreamHealthChecksInstrument,
 )
@@ -126,8 +125,7 @@ class _Bootstrapper(FastStreamBootstrapper):
     # instruments we actually use sidesteps the bug and matches the dependency
     # set declared in ``pyproject.toml``. Remove once upstream evaluates
     # ``check_dependencies()`` before instantiation.
-    instruments_types: ClassVar = [  # pyright: ignore[reportIncompatibleVariableOverride]
-        PyroscopeInstrument,
+    instruments_types: ClassVar = [  # type: ignore[assignment]  # pyright: ignore[reportIncompatibleVariableOverride]
         FastStreamSentryInstrument,
         FastStreamHealthChecksInstrument,
         FastStreamLoggingInstrument,
@@ -178,7 +176,7 @@ async def handle_message(body: Message) -> None:  # noqa: RUF029
 def create_app() -> AsgiFastStream:
     # ASGI app factory: builds the ``FastStreamConfig`` and runs it through
     # ``FastStreamBootstrapper`` so lite-bootstrap's instruments (Sentry,
-    # structlog, Pyroscope) wire themselves up. Compatible with
+    # structlog) wire themselves up. Compatible with
     # ``uvicorn --factory``: ``uvicorn croupier.main:create_app --factory``.
     config = FastStreamConfig(
         application=AsgiFastStream(broker),

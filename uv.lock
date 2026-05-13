@@ -191,7 +191,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "faststream", extras = ["rabbit"], specifier = "==0.6.7" },
-    { name = "lite-bootstrap", extras = ["faststream-logging", "faststream-sentry"], specifier = "==0.28.0" },
+    { name = "lite-bootstrap", extras = ["faststream-logging", "faststream-sentry"], specifier = "==0.28.1" },
     { name = "pydantic-settings", specifier = "==2.14.1" },
     { name = "python-escpos", specifier = "==3.1" },
     { name = "uvicorn", specifier = "==0.46.0" },
@@ -324,14 +324,14 @@ wheels = [
 
 [[package]]
 name = "lite-bootstrap"
-version = "0.28.0"
+version = "0.28.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5c/f7/70eaa1269efc1f4c58be22b15b8a442470a8e28f1914d38d18fa76ed5da0/lite_bootstrap-0.28.0.tar.gz", hash = "sha256:29b98058a24fc2fb817dc44eeb7a0c67b683e76c8613086d9f0692fd0d97b116", size = 1820984, upload-time = "2026-05-02T17:09:17.321Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/aa/d275a5e3f6386efc673f3d25eaf3583e3c3712c450b606c8156a6a748b45/lite_bootstrap-0.28.1.tar.gz", hash = "sha256:fb0d6a8b9c34d224c02cd07ee81320a2e8002b3f509fff0b8d2f3bc6a8915f7b", size = 1821152, upload-time = "2026-05-13T16:43:04.126Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/c0/42409c1fb4c808d3f9caca6a9eec4fe7a4276f5cdf4ba2bd0b53d8062508/lite_bootstrap-0.28.0-py3-none-any.whl", hash = "sha256:81f5537c4ffe82bf8ea832485a94dc310852bb4797dcbe96af4b27b7598abf53", size = 1832383, upload-time = "2026-05-02T17:09:15.967Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/07/b8bd45e4bafdbdcd1ed1769d3fe1d90178e03e2a5f109d0b32d15a2608ec/lite_bootstrap-0.28.1-py3-none-any.whl", hash = "sha256:22534259dd43f96f56747955a419117417ab35f81c7ac79fcfb02e65bf11dd03", size = 1832531, upload-time = "2026-05-13T16:43:05.754Z" },
 ]
 
 [package.optional-dependencies]

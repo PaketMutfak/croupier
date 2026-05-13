@@ -436,7 +436,7 @@ class TestSentryMiddleware:
         sentry_sdk.flush(timeout=2)
 
         assert recording_transport.events, "no event reached transport"
-        tags = recording_transport.events[0].get("tags") or {}
+        tags: Any = recording_transport.events[0].get("tags") or {}
         # ``tags`` may be a dict or a list of [key, value] pairs depending on
         # SDK version — normalize before asserting.
         if isinstance(tags, list):

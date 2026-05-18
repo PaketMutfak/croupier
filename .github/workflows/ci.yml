@@ -31,7 +31,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
       - name: Prek checks
-        uses: j178/prek-action@6ad80277337ad479fe43bd70701c3f7f8aa74db3  # v2.0.3
+        uses: j178/prek-action@bdca6f102f98e2b4c7029491a53dfd366469e33d  # v2.0.4
       - name: Commit formatting and linting fixes
         if: failure()
         uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9  # v7.1.0

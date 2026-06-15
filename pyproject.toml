@@ -15,7 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "basedpyright==1.39.3",
+  "basedpyright==1.39.8",
   "mypy==2.0.0",
   "parametrize-from-file==0.21.0",
   "prek==0.3.13",

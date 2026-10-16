@@ -88,7 +88,8 @@ class SentryMiddleware(BaseMiddleware[Any, bytes]):
             # carrying ``correlation_id=...`` can be pivoted to the matching
             # Sentry event in one filter. High cardinality is fine here —
             # the index is used for lookup, never for groupby aggregation.
-            scope.set_tag("correlation_id", msg.correlation_id)
+            if msg.correlation_id:
+                scope.set_tag("correlation_id", msg.correlation_id)
             try:
                 return await call_next(msg)
             except IgnoredException:

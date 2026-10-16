@@ -102,5 +102,5 @@ hooks = [
     "python",
   ], exclude_types = [
     "symlink",
-  ], files = "^tests/.*/test_.*\\.py$", pass_filenames = false },
+  ], files = "^tests/.*test_.*\\.py$", pass_filenames = false },
 ]

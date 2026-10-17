@@ -663,3 +663,21 @@ class TestDlqPropagationThroughMiddleware:
 
         sentry_sdk.flush(timeout=2)
         assert recording_transport.events, "middleware did not capture event"
+
+
+class TestSentryNoiseControl:
+    def test_faststream_logger_errors_do_not_become_events(
+        self,
+        recording_transport: _RecordingTransport,
+    ) -> None:
+        logging.getLogger("faststream").error("Processing error")
+        sentry_sdk.flush(timeout=2)
+        assert recording_transport.events == []
+
+    def test_other_logger_errors_still_become_events(
+        self,
+        recording_transport: _RecordingTransport,
+    ) -> None:
+        logging.getLogger("croupier.main").error("still captured")
+        sentry_sdk.flush(timeout=2)
+        assert len(recording_transport.events) == 1

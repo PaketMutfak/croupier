@@ -24,7 +24,7 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import JsonConfigSettingsSource
 from pydantic_settings import PydanticBaseSettingsSource
 from pydantic_settings import SettingsConfigDict
-from sentry_sdk.integrations.asyncio import AsyncioIntegration
+from sentry_sdk.integrations.logging import ignore_logger
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -34,6 +34,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# FastStream logs every handler failure on its own ``faststream`` logger. The
+# Sentry SDK's auto-enabled LoggingIntegration would promote that ERROR record
+# to a second event with no exception and no ``correlation_id``, duplicating the
+# one ``SentryMiddleware`` already emits. Breadcrumbs and events from this
+# logger are dropped; the middleware event is the canonical one.
+ignore_logger("faststream")
 
 
 class Settings(BaseSettings):
@@ -163,13 +170,11 @@ def create_app() -> AsgiFastStream:
         sentry_dsn=(
             settings.sentry_dsn.unicode_string() if settings.sentry_dsn else None
         ),
-        # AsyncioIntegration is NOT in sentry-sdk's default integrations set,
-        # so it has to be added explicitly. It catches unhandled exceptions
-        # in background asyncio tasks — defense in depth in case something
-        # escapes SentryMiddleware. The auto-enabled LoggingIntegration
-        # handles ERROR-and-up log records, which is how SentryMiddleware
-        # and the close-failure finally block emit their events.
-        sentry_integrations=[AsyncioIntegration()],
+        # AsyncioIntegration is deliberately NOT registered: on every SIGTERM
+        # shutdown it reported the cancelled aiormq channel tasks as four
+        # ``ChannelClosed`` error events per process. The auto-enabled
+        # LoggingIntegration handles ERROR-and-up log records, which is how
+        # SentryMiddleware and the close-failure finally block emit events.
         # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
         # after init.
         sentry_tags={"queue_name": settings.queue_name},

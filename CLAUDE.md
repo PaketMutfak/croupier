@@ -54,7 +54,7 @@ All application logic lives in `src/croupier/main.py` — a single-module design
 - **Printing** — Uses `python-escpos` `Network` printer. `open()` and `_raw()` run inside a `try/finally` so a half-open socket from a failed connect still gets a `close()` attempt. Close-failure narrow-except uses PEP 758 unparenthesized form (`except OSError, AttributeError:`) — broader exceptions intentionally surface (programming-bug visibility trade-off).
 - **Health** — `GET /health/` — payload comes from lite-bootstrap (no override).
 - **Logging** — structlog → JSON on stdout via lite-bootstrap's `LoggingInstrument` (`service_debug=False`). No file handler, no rotating logs.
-- **AsyncioIntegration** — Registered explicitly via `FastStreamConfig.sentry_integrations` (not in sentry-sdk's default set); catches unhandled exceptions in background asyncio tasks.
+- **Sentry noise control** — `AsyncioIntegration` is intentionally NOT registered (it emitted four `ChannelClosed` events per clean shutdown from cancelled aiormq tasks), and `ignore_logger("faststream")` is called at import so FastStream's own failure log does not duplicate the `SentryMiddleware` event.
 
 `main.py` at the project root is just the entrypoint that calls `croupier.main.main()`, which runs `uvicorn.run(create_app())`.
 

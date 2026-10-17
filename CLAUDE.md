@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Croupier
 
-Croupier is a receipt printing microservice. It consumes ESC/POS receipt messages from a RabbitMQ queue and forwards raw bytes to network thermal printers. It also exposes the same handler as a REST endpoint via FastAPI.
+Croupier is a receipt printing microservice. It consumes ESC/POS receipt messages from a RabbitMQ queue and forwards raw bytes to network thermal printers. Receipts arrive only via the queue — there is no HTTP receipt-ingress route. (Operational HTTP surface — `/health/` — is mounted by lite-bootstrap.)
 
 ## Python Version
 
@@ -14,15 +14,15 @@ Requires Python **3.14+** (`requires-python = ">=3.14"`).
 
 ```bash
 uv sync                  # Install dependencies
-uv run main.py           # Start the server (reads ~/.croupier.json)
+uv run main.py           # Start the worker (reads ~/.croupier.json, serves on uvicorn)
 uv run pytest            # Run all tests
-uv run pytest tests/test_main.py::TestHealthEndpoint  # Run a single test class
-uv run pytest -k "test_returns_204"                   # Run tests matching a pattern
+uv run pytest tests/test_main.py::TestHandleMessageSubscriber  # Run a single test class
+uv run pytest -k "isolation_scope"                              # Run tests matching a pattern
 ```
 
 ### Lint / CI
 
-The full CI pipeline (also available via `xc ci`):
+The full CI pipeline (run manually; no task-runner config in the repo):
 
 ```bash
 uv run validate-pyproject pyproject.toml
@@ -44,26 +44,35 @@ Ruff is configured with `select = ["ALL"]` and `unsafe-fixes = true`. Ignored ru
 
 ## Architecture
 
-All application logic lives in `src/croupier/main.py` — a single-module design:
+All application logic lives in `src/croupier/main.py` — a single-module design wrapped by [`lite-bootstrap`](https://lite-bootstrap.readthedocs.io/integrations/faststream/):
 
-- **Settings** — `pydantic-settings` `BaseSettings` subclass that reads _only_ from `~/.croupier.json` (no env vars, no .env). Fields: `queue_url` (AMQP DSN), `exchange_name`, `queue_name`, `dlx_name`, `dlq_name`.
+- **Settings** — `pydantic-settings` `BaseSettings` subclass that reads _only_ from `~/.croupier.json` (no env vars, no .env). Fields: `queue_url` (AMQP DSN), `queue_name`, optional `sentry_dsn` (`HttpUrl`, default `None`), `sentry_environment` (`Literal["development","staging","production"]`, default `"development"`). `model_config` sets `frozen=True` and `extra="ignore"` (legacy `exchange_name`/`dlx_name`/`dlq_name` keys in older JSON files are silently ignored). No DSN-shape validation beyond `HttpUrl`; `sentry-sdk` surfaces malformed DSNs as transport warnings at runtime.
+- **Per-deployment branching** — `queue_name` is the fleet-unique identifier surfaced as the Sentry `queue_name` tag. Append a branch suffix per deployment (e.g. `receipt.dispatch.istanbul-1`) so signals stay separable when multiple instances share infrastructure. The shipped `.croupier.json` carries this suffix as the canonical example.
 - **Message** — Pydantic model carrying raw ESC/POS `content: bytes` plus printer network coordinates (`network_host`, `network_timeout`).
-- **RabbitRouter** — `faststream.rabbit.fastapi.RabbitRouter` wired to the configured exchange/queue with dead letter routing (DLX/DLQ) for failed messages. The same `handle_message` function serves as both the RabbitMQ subscriber and a `POST /handle-message` HTTP endpoint.
-- **Printing** — Uses `python-escpos` `Network` printer; sends raw bytes via `printer._raw()`.
-- **Health** — `GET /` pings the RabbitMQ broker; returns 204 or 500.
-- **Logging** — `RotatingFileHandler` writes to `~/.croupier.log` (10 MB, 5 backups) for `faststream` loggers.
+- **Broker** — `faststream.rabbit.RabbitBroker` (no FastAPI). `handle_message` is registered as a `@broker.subscriber` against the queue declared externally (`declare=False`). DLX/DLQ routing relies on the broker-side queue policy plus the FastStream NACK path; `SentryMiddleware` re-raises so NACK still fires.
+- **SentryMiddleware** — Custom `BaseMiddleware[Any, bytes]` registered conditionally on the broker (only when `sentry_dsn` is set). Opens a per-message `sentry_sdk.isolation_scope()`, tags it with `correlation_id` (from `StreamMessage.correlation_id`, indexed for log↔event pivot), then `logger.exception(...)` on unhandled exceptions (auto-promoted to a Sentry event by the SDK's `LoggingIntegration`) and re-raises so FastStream's NACK→DLX/DLQ path still runs. `IgnoredException` is re-raised without capture. Short-circuits to a plain passthrough when `sentry_sdk.is_initialized()` is `False`. Exception class is filterable in the Sentry UI via the built-in `error.type` index — no custom tag needed.
+- **Printing** — Uses `python-escpos` `Network` printer. `open()` and `_raw()` run inside a `try/finally` so a half-open socket from a failed connect still gets a `close()` attempt. Close-failure narrow-except uses PEP 758 unparenthesized form (`except OSError, AttributeError:`) — broader exceptions intentionally surface (programming-bug visibility trade-off).
+- **Health** — `GET /health/` — payload comes from lite-bootstrap (no override).
+- **Logging** — structlog → JSON on stdout via lite-bootstrap's `LoggingInstrument` (`service_debug=False`). No file handler, no rotating logs.
+- **Sentry noise control** — `AsyncioIntegration` is intentionally NOT registered (it emitted four `ChannelClosed` events per clean shutdown from cancelled aiormq tasks), and `ignore_logger("faststream")` is called at import so FastStream's own failure log does not duplicate the `SentryMiddleware` event.
 
-`main.py` at the project root is just the entrypoint that calls `croupier.main.main()`.
+`main.py` at the project root is just the entrypoint that calls `croupier.main.main()`, which runs `uvicorn.run(create_app())`.
+
+`create_app() -> AsgiFastStream` is the ASGI app factory: builds the `FastStreamConfig`, runs it through `_Bootstrapper` (a `FastStreamBootstrapper` subclass), and returns the bootstrapped ASGI app. Compatible with `uvicorn --factory`: `uvicorn croupier.main:create_app --factory`. Bootstrap reconfigures global state (structlog, Sentry init); call once per process.
 
 ## Testing
 
 Tests use `faststream.rabbit.TestRabbitBroker` to simulate RabbitMQ in-memory (no broker needed). The `Network` printer is mocked by patching `croupier.main.Network` (not `escpos.printer.Network`). pytest-asyncio is configured with `asyncio_mode = "auto"`.
 
-`tests/conftest.py` always overwrites `~/.croupier.json` with test values before collection (backing up any existing file) and restores the original after tests, because `Settings()` runs at module import time.
+Sentry tests use a `_RecordingTransport` plus `sentry_sdk.init(...)` per-test. An autouse `_reset_sentry_global_state` fixture replaces the global client with `NonRecordingClient()` and clears the isolation/global scopes between tests so tag mutations cannot leak.
+
+`tests/conftest.py` always overwrites `~/.croupier.json` with test values before collection (backing up any existing file) and restores the original after tests, because `Settings()` runs at module import time. Test config omits `sentry_dsn` (defaults to `None`) so the production short-circuit path is exercised by default. `sentry_environment` defaults to `"development"`.
 
 ## Key Dependencies
 
-- **FastAPI** + **uvicorn** — HTTP layer
+- **uvicorn** — ASGI server (the worker is an `AsgiFastStream` app)
 - **FastStream[rabbit]** — RabbitMQ consumer/producer via `aio-pika`
+- **lite-bootstrap[faststream-logging,faststream-sentry]** — composes Sentry + structlog behind one `FastStreamConfig` object. Prometheus, OpenTelemetry, and Pyroscope extras intentionally omitted: Croupier runs on branch computers (NAT'd edge hosts) where pull-based scraping is impractical and there are no downstream hops to stitch into traces. Continuous profiling (Pyroscope) is tracked as future work in [#46](https://github.com/PaketMutfak/croupier/issues/46).
+- **sentry-sdk** — error tracking (transitively via `lite-bootstrap`)
 - **python-escpos** — ESC/POS printer protocol
 - **pydantic-settings** — JSON-file-based configuration

@@ -78,7 +78,10 @@ async def health(request: Request) -> Response:
     return Response(status_code=HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+logger = logging.getLogger(__name__)
+
 STD_INPUT_HANDLE = -10
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 ENABLE_QUICK_EDIT_MODE = 0x0040
 ENABLE_EXTENDED_FLAGS = 0x0080
 
@@ -89,9 +92,15 @@ def disable_console_quick_edit() -> None:
     With QuickEdit on, a click inside the console starts a text selection,
     which blocks writes to stdout and freezes the service until a key is
     pressed.
+
+    This is a conhost setting; it may have no effect under Windows Terminal.
+    Failures are logged and never prevent startup.
     """
     if sys.platform == "win32":
-        _clear_quick_edit_flag()
+        try:
+            _clear_quick_edit_flag()
+        except OSError:
+            logger.warning("Could not disable console QuickEdit mode", exc_info=True)
 
 
 def _clear_quick_edit_flag() -> None:
@@ -106,14 +115,15 @@ def _clear_quick_edit_flag() -> None:
     kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
     mode = ctypes.c_uint32()
-    if not handle or not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+    if handle in {None, INVALID_HANDLE_VALUE} or not kernel32.GetConsoleMode(
+        handle, ctypes.byref(mode)
+    ):
         return  # Not attached to a console (e.g. redirected or windowless).
     new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
     kernel32.SetConsoleMode(handle, new_mode)
 
 
 def main() -> None:
-    disable_console_quick_edit()
     file_handler = RotatingFileHandler(
         filename=Path.home() / ".croupier.log",
         maxBytes=10 * 1024 * 1024,
@@ -122,8 +132,10 @@ def main() -> None:
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"),
     )
-    for name in ("faststream", "faststream.access.rabbit"):
+    for name in ("faststream", "faststream.access.rabbit", __name__):
         logging.getLogger(name).addHandler(file_handler)
+
+    disable_console_quick_edit()
 
     app = FastAPI(debug=True)
     app.include_router(router)

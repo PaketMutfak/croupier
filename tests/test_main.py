@@ -7,6 +7,7 @@ from faststream.rabbit import TestRabbitBroker
 
 from croupier.main import ENABLE_EXTENDED_FLAGS
 from croupier.main import ENABLE_QUICK_EDIT_MODE
+from croupier.main import INVALID_HANDLE_VALUE
 from croupier.main import Message
 from croupier.main import disable_console_quick_edit
 from croupier.main import handle_message
@@ -127,3 +128,25 @@ class TestDisableConsoleQuickEdit:
         new_mode = kernel32.SetConsoleMode.call_args.args[1]
         assert not new_mode & ENABLE_QUICK_EDIT_MODE
         assert new_mode & ENABLE_EXTENDED_FLAGS
+
+    def test_logs_and_continues_when_win32_call_fails(self) -> None:
+        with (
+            patch("croupier.main.sys.platform", "win32"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+            patch("croupier.main.logger") as mock_logger,
+        ):
+            mock_ctypes.WinDLL.side_effect = OSError("boom")
+            disable_console_quick_edit()
+        mock_logger.warning.assert_called_once()
+
+    def test_skips_invalid_handle(self) -> None:
+        kernel32 = MagicMock()
+        kernel32.GetStdHandle.return_value = INVALID_HANDLE_VALUE
+        with (
+            patch("croupier.main.sys.platform", "win32"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            disable_console_quick_edit()
+        kernel32.GetConsoleMode.assert_not_called()
+        kernel32.SetConsoleMode.assert_not_called()

@@ -5,7 +5,10 @@ from unittest.mock import patch
 import pytest
 from faststream.rabbit import TestRabbitBroker
 
+from croupier.main import ENABLE_EXTENDED_FLAGS
+from croupier.main import ENABLE_QUICK_EDIT_MODE
 from croupier.main import Message
+from croupier.main import disable_console_quick_edit
 from croupier.main import handle_message
 from croupier.main import health
 from croupier.main import router
@@ -88,3 +91,39 @@ class TestHealthEndpoint:
 
         response = await health(mock_request)
         assert response.status_code == 500
+
+
+class TestDisableConsoleQuickEdit:
+    """Tests for disable_console_quick_edit."""
+
+    def test_is_noop_on_non_windows(self) -> None:
+        with (
+            patch("croupier.main.sys.platform", "linux"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+        ):
+            disable_console_quick_edit()
+        mock_ctypes.WinDLL.assert_not_called()
+
+    def test_clears_quick_edit_flag_on_windows(self) -> None:
+        mode_value = 0x00F7  # includes QuickEdit (0x40)
+        kernel32 = MagicMock()
+        kernel32.GetStdHandle.return_value = 1234
+
+        def fake_get_console_mode(_handle: int, mode_ref: MagicMock) -> int:
+            mode_ref.value = mode_value
+            return 1
+
+        kernel32.GetConsoleMode.side_effect = fake_get_console_mode
+
+        with (
+            patch("croupier.main.sys.platform", "win32"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            mock_ctypes.c_uint32.return_value = MagicMock()
+            mock_ctypes.byref.side_effect = lambda x: x
+            disable_console_quick_edit()
+
+        new_mode = kernel32.SetConsoleMode.call_args.args[1]
+        assert not new_mode & ENABLE_QUICK_EDIT_MODE
+        assert new_mode & ENABLE_EXTENDED_FLAGS

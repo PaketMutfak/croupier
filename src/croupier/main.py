@@ -173,9 +173,13 @@ def _set_console_mode(kernel32: Any, handle: int, mode: int) -> None:  # noqa: A
 def _clear_quick_edit_flag() -> None:
     kernel32 = _kernel32()
     with _console_input(kernel32) as handle:
-        mode = ctypes.c_uint32()
-        if handle is None or not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        if handle is None:
             return  # Not attached to a console (e.g. windowless).
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            error = ctypes.get_last_error()  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+            msg = f"GetConsoleMode failed (error {error})"
+            raise OSError(msg)
         original_mode = mode.value
         new_mode = (original_mode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
         _set_console_mode(kernel32, handle, new_mode)

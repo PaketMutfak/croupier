@@ -183,6 +183,17 @@ class TestDisableConsoleQuickEdit:
             disable_console_quick_edit()
         mock_logger.warning.assert_called_once()
 
+    def test_logs_when_get_console_mode_fails(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.GetConsoleMode.side_effect = None
+        kernel32.GetConsoleMode.return_value = 0
+        mock_atexit, mock_logger = self._run(kernel32)
+
+        mock_logger.warning.assert_called_once()
+        kernel32.SetConsoleMode.assert_not_called()
+        mock_atexit.register.assert_not_called()
+        kernel32.CloseHandle.assert_called_once_with(1234)
+
     def test_logs_when_set_console_mode_returns_zero(self) -> None:
         kernel32 = self._kernel32()
         kernel32.SetConsoleMode.return_value = 0

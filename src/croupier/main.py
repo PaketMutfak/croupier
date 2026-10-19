@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import ClassVar
+from typing import NoReturn
 
 import uvicorn
 from escpos.printer import Network
@@ -93,6 +94,10 @@ GENERIC_WRITE = 0x40000000
 FILE_SHARE_READ = 0x1
 FILE_SHARE_WRITE = 0x2
 OPEN_EXISTING = 3
+ERROR_FILE_NOT_FOUND = 2
+ERROR_INVALID_HANDLE = 6
+# CreateFileW("CONIN$") fails with one of these when no console is attached.
+NO_CONSOLE_ERRORS = frozenset({ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE})
 ENABLE_QUICK_EDIT_MODE = 0x0040
 ENABLE_EXTENDED_FLAGS = 0x0080
 
@@ -138,12 +143,19 @@ def _kernel32() -> Any:  # noqa: ANN401
     return kernel32
 
 
+def _raise_last_error(call: str) -> NoReturn:
+    error = ctypes.get_last_error()  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+    msg = f"{call} failed (error {error})"
+    raise OSError(msg)
+
+
 @contextmanager
 def _console_input(kernel32: Any) -> Iterator[int | None]:  # noqa: ANN401
     """Yield a handle to the console input buffer, or None without a console.
 
     ``CONIN$`` is opened explicitly because the standard input handle points
-    at a file or pipe when stdin is redirected.
+    at a file or pipe when stdin is redirected. Only the errors Windows
+    reports for a missing console mean "no console"; any other failure raises.
     """
     handle = kernel32.CreateFileW(
         "CONIN$",
@@ -155,19 +167,19 @@ def _console_input(kernel32: Any) -> Iterator[int | None]:  # noqa: ANN401
         None,
     )
     if handle in {None, INVALID_HANDLE_VALUE}:
-        yield None
-        return
+        if ctypes.get_last_error() in NO_CONSOLE_ERRORS:  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+            yield None
+            return
+        _raise_last_error("CreateFileW(CONIN$)")
     try:
         yield handle
     finally:
-        kernel32.CloseHandle(handle)
-
-
-def _set_console_mode(kernel32: Any, handle: int, mode: int) -> None:  # noqa: ANN401
-    if not kernel32.SetConsoleMode(handle, mode):
-        error = ctypes.get_last_error()  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
-        msg = f"SetConsoleMode failed (error {error})"
-        raise OSError(msg)
+        if not kernel32.CloseHandle(handle):
+            # Cleanup only: raising here would mask the real outcome.
+            logger.warning(
+                "CloseHandle failed (error %s)",
+                ctypes.get_last_error(),  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+            )
 
 
 def _clear_quick_edit_flag() -> None:
@@ -177,12 +189,11 @@ def _clear_quick_edit_flag() -> None:
             return  # Not attached to a console (e.g. windowless).
         mode = ctypes.c_uint32()
         if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            error = ctypes.get_last_error()  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
-            msg = f"GetConsoleMode failed (error {error})"
-            raise OSError(msg)
+            _raise_last_error("GetConsoleMode")
         original_mode = mode.value
         new_mode = (original_mode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
-        _set_console_mode(kernel32, handle, new_mode)
+        if not kernel32.SetConsoleMode(handle, new_mode):
+            _raise_last_error("SetConsoleMode")
     atexit.register(restore_console_mode, original_mode)
 
 
@@ -190,8 +201,10 @@ def restore_console_mode(original_mode: int) -> None:
     try:
         kernel32 = _kernel32()
         with _console_input(kernel32) as handle:
-            if handle is not None:
-                _set_console_mode(kernel32, handle, original_mode)
+            if handle is not None and not kernel32.SetConsoleMode(
+                handle, original_mode
+            ):
+                _raise_last_error("SetConsoleMode")
     except OSError:
         logger.warning("Could not restore console mode", exc_info=True)
 

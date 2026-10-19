@@ -7,6 +7,7 @@ from faststream.rabbit import TestRabbitBroker
 
 from croupier.main import ENABLE_EXTENDED_FLAGS
 from croupier.main import ENABLE_QUICK_EDIT_MODE
+from croupier.main import ERROR_INVALID_HANDLE
 from croupier.main import INVALID_HANDLE_VALUE
 from croupier.main import Message
 from croupier.main import disable_console_quick_edit
@@ -109,9 +110,12 @@ class TestDisableConsoleQuickEdit:
 
         kernel32.GetConsoleMode.side_effect = fake_get_console_mode
         kernel32.SetConsoleMode.return_value = 1
+        kernel32.CloseHandle.return_value = 1
         return kernel32
 
-    def _run(self, kernel32: MagicMock) -> tuple[MagicMock, MagicMock]:
+    def _run(
+        self, kernel32: MagicMock, *, last_error: int = 5
+    ) -> tuple[MagicMock, MagicMock]:
         with (
             patch("croupier.main.sys.platform", "win32"),
             patch("croupier.main.ctypes") as mock_ctypes,
@@ -121,7 +125,7 @@ class TestDisableConsoleQuickEdit:
             mock_ctypes.WinDLL.return_value = kernel32
             mock_ctypes.c_uint32.return_value = MagicMock()
             mock_ctypes.byref.side_effect = lambda x: x
-            mock_ctypes.get_last_error.return_value = 5
+            mock_ctypes.get_last_error.return_value = last_error
             disable_console_quick_edit()
         return mock_atexit, mock_logger
 
@@ -166,12 +170,43 @@ class TestDisableConsoleQuickEdit:
 
     def test_skips_when_no_console(self) -> None:
         kernel32 = self._kernel32(handle=INVALID_HANDLE_VALUE)
-        mock_atexit, _ = self._run(kernel32)
+        mock_atexit, mock_logger = self._run(kernel32, last_error=ERROR_INVALID_HANDLE)
+
+        mock_logger.warning.assert_not_called()
 
         kernel32.GetConsoleMode.assert_not_called()
         kernel32.SetConsoleMode.assert_not_called()
         kernel32.CloseHandle.assert_not_called()
         mock_atexit.register.assert_not_called()
+
+    def test_logs_when_conin_open_fails_for_other_reason(self) -> None:
+        kernel32 = self._kernel32(handle=INVALID_HANDLE_VALUE)
+        mock_atexit, mock_logger = self._run(kernel32, last_error=5)
+
+        mock_logger.warning.assert_called_once()
+        kernel32.GetConsoleMode.assert_not_called()
+        mock_atexit.register.assert_not_called()
+
+    def test_logs_when_close_handle_fails(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.CloseHandle.return_value = 0
+        mock_atexit, mock_logger = self._run(kernel32)
+
+        mock_logger.warning.assert_called_once()
+        mock_atexit.register.assert_called_once()
+
+    def test_restore_logs_when_set_console_mode_fails(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.SetConsoleMode.return_value = 0
+        with (
+            patch("croupier.main.ctypes") as mock_ctypes,
+            patch("croupier.main.logger") as mock_logger,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            mock_ctypes.get_last_error.return_value = 5
+            restore_console_mode(0x00F7)
+
+        mock_logger.warning.assert_called_once()
 
     def test_logs_and_continues_when_win32_call_fails(self) -> None:
         with (

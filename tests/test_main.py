@@ -12,7 +12,6 @@ from faststream.asgi import AsgiFastStream
 from faststream.exceptions import IgnoredException
 from faststream.message import StreamMessage
 from faststream.rabbit import RabbitBroker
-from faststream.rabbit import RabbitQueue
 from faststream.rabbit import TestRabbitBroker
 from sentry_sdk.client import NonRecordingClient
 from sentry_sdk.integrations.logging import LoggingIntegration

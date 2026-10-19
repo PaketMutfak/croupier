@@ -166,8 +166,6 @@ def restore_console_mode(original_mode: int) -> None:
         logger.warning("Could not restore console mode", exc_info=True)
 
 
-
-
 class SentryMiddleware(BaseMiddleware[Any, bytes]):
     @override
     async def consume_scope(

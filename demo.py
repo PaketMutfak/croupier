@@ -9,12 +9,13 @@ import asyncio
 
 from escpos.printer import Dummy
 from faststream.rabbit import RabbitBroker
+from faststream.rabbit import RabbitExchange
 from faststream.rabbit import RabbitQueue
 
 from croupier.printing import Message
 from croupier.settings import load_settings
 
-RECEIPT_EXCHANGE = "receipt.dispatch"
+RECEIPT_EXCHANGE = RabbitExchange(name="receipt.dispatch", declare=False)
 
 
 def justify(left: str, right: str, width: int = 32) -> str:

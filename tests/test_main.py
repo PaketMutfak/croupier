@@ -44,7 +44,7 @@ class TestSubscriber:
     ) -> None:
         printer = Dummy()
         closed: list[bool] = []
-        printer.close = lambda: closed.append(True)  # type: ignore[method-assign]
+        printer.close = lambda: closed.append(True)
         app = build_app(settings, connect=lambda _m: printer)
 
         async with TestRabbitBroker(app.state.broker) as br:
@@ -107,7 +107,7 @@ class TestHandleMessageEndpoint:
     ) -> None:
         printer = Dummy()
         closed: list[bool] = []
-        printer.close = lambda: closed.append(True)  # type: ignore[method-assign]
+        printer.close = lambda: closed.append(True)
         with patch.object(printer, "_raw", side_effect=OSError("printer offline")):
             app = build_app(settings, connect=lambda _m: printer)
             async with TestRabbitBroker(app.state.broker):

@@ -46,7 +46,7 @@ def test_serialises_content_as_utf8_string() -> None:
 def test_content_that_is_not_utf8_cannot_be_serialised() -> None:
     # Locks the contract: do not change the wire format; producers must send
     # UTF-8 (producers send ASCII). See docs/adr/0001.
-    message = Message(content=b"caf\xe9", network_host="h", network_timeout=1)
+    message = Message(content=b"\xe9", network_host="h", network_timeout=1)
 
     with pytest.raises(PydanticSerializationError):
         message.model_dump_json()

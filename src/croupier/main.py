@@ -45,7 +45,7 @@ def build_app(
     Failure path: ``print_receipt`` errors propagate out of ``handle_message``.
     ``AckPolicy.REJECT_ON_ERROR`` then rejects the message without requeue, the
     queue's dead-letter arguments route it to ``receipt.dispatch.dlq``, and the
-    producing side alerts on it. Swallowing errors or requeueing here would break that.
+    producing side alerts on it. Swallowing errors or requeuing here would break that.
     Over HTTP the same error is a 500.
     """
     router = RabbitRouter(settings.queue_url.unicode_string())

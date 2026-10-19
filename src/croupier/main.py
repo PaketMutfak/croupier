@@ -1,8 +1,12 @@
+import atexit
 import ctypes
 import logging
 import sys
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import Any
 from typing import ClassVar
 
 import uvicorn
@@ -22,6 +26,9 @@ from pydantic_settings import SettingsConfigDict
 from starlette.responses import Response
 from starlette.status import HTTP_204_NO_CONTENT
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class Settings(BaseSettings):
@@ -80,21 +87,26 @@ async def health(request: Request) -> Response:
 
 logger = logging.getLogger(__name__)
 
-STD_INPUT_HANDLE = -10
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ = 0x1
+FILE_SHARE_WRITE = 0x2
+OPEN_EXISTING = 3
 ENABLE_QUICK_EDIT_MODE = 0x0040
 ENABLE_EXTENDED_FLAGS = 0x0080
 
 
 def disable_console_quick_edit() -> None:
-    """Disable Windows console QuickEdit mode.
+    """Disable Windows console QuickEdit mode for the life of the process.
 
     With QuickEdit on, a click inside the console starts a text selection,
     which blocks writes to stdout and freezes the service until a key is
     pressed.
 
-    This is a conhost setting; it may have no effect under Windows Terminal.
-    Failures are logged and never prevent startup.
+    The console input mode is shared with the parent shell, so the original
+    mode is restored at exit. This is a conhost setting; it may have no effect
+    under Windows Terminal. Failures are logged and never prevent startup.
     """
     if sys.platform == "win32":
         try:
@@ -103,27 +115,81 @@ def disable_console_quick_edit() -> None:
             logger.warning("Could not disable console QuickEdit mode", exc_info=True)
 
 
-def _clear_quick_edit_flag() -> None:
+def _kernel32() -> Any:  # noqa: ANN401
     kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
         "kernel32", use_last_error=True
     )
-    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
     kernel32.GetConsoleMode.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_uint32),
     ]
     kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
-    mode = ctypes.c_uint32()
-    if handle in {None, INVALID_HANDLE_VALUE} or not kernel32.GetConsoleMode(
-        handle, ctypes.byref(mode)
-    ):
-        return  # Not attached to a console (e.g. redirected or windowless).
-    new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
-    if not kernel32.SetConsoleMode(handle, new_mode):
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    return kernel32
+
+
+@contextmanager
+def _console_input(kernel32: Any) -> Iterator[int | None]:  # noqa: ANN401
+    """Yield a handle to the console input buffer, or None without a console.
+
+    ``CONIN$`` is opened explicitly because the standard input handle points
+    at a file or pipe when stdin is redirected.
+    """
+    handle = kernel32.CreateFileW(
+        "CONIN$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle in {None, INVALID_HANDLE_VALUE}:
+        yield None
+        return
+    try:
+        yield handle
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _set_console_mode(kernel32: Any, handle: int, mode: int) -> None:  # noqa: ANN401
+    if not kernel32.SetConsoleMode(handle, mode):
         error = ctypes.get_last_error()  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
         msg = f"SetConsoleMode failed (error {error})"
         raise OSError(msg)
+
+
+def _clear_quick_edit_flag() -> None:
+    kernel32 = _kernel32()
+    with _console_input(kernel32) as handle:
+        mode = ctypes.c_uint32()
+        if handle is None or not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return  # Not attached to a console (e.g. windowless).
+        original_mode = mode.value
+        new_mode = (original_mode & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
+        _set_console_mode(kernel32, handle, new_mode)
+    atexit.register(restore_console_mode, original_mode)
+
+
+def restore_console_mode(original_mode: int) -> None:
+    try:
+        kernel32 = _kernel32()
+        with _console_input(kernel32) as handle:
+            if handle is not None:
+                _set_console_mode(kernel32, handle, original_mode)
+    except OSError:
+        logger.warning("Could not restore console mode", exc_info=True)
 
 
 def main() -> None:

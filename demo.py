@@ -1,13 +1,21 @@
-"""Demo script that generates ESC/POS receipt bytes and publishes to the queue."""
+"""Demo script that generates ESC/POS receipt bytes and publishes to the queue.
+
+The producing side owns the RabbitMQ topology, so this publishes to an existing queue
+and declares nothing (re-declaring it with different arguments would fail with
+PRECONDITION_FAILED). The queue must already exist.
+"""
 
 import asyncio
 
 from escpos.printer import Dummy
+from faststream.rabbit import RabbitBroker
+from faststream.rabbit import RabbitExchange
 from faststream.rabbit import RabbitQueue
 
-from croupier.main import Message
-from croupier.main import broker
-from croupier.main import settings
+from croupier.printing import Message
+from croupier.settings import load_settings
+
+RECEIPT_EXCHANGE = RabbitExchange(name="receipt.dispatch", declare=False)
 
 
 def justify(left: str, right: str, width: int = 32) -> str:
@@ -33,15 +41,19 @@ def build_receipt() -> bytes:
 
 
 async def main() -> None:
+    settings = load_settings()
     message = Message(
         content=build_receipt(),
         network_host="localhost",
         network_timeout=10,
     )
 
-    async with broker:
+    async with RabbitBroker(settings.queue_url.unicode_string()) as broker:
         _ = await broker.publish(
-            message=message, queue=RabbitQueue(name=settings.queue_name, declare=True)
+            message=message,
+            queue=RabbitQueue(name=settings.queue_name, declare=False),
+            exchange=RECEIPT_EXCHANGE,
+            timeout=60,
         )
         print("Published message")  # noqa: T201
 

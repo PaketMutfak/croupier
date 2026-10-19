@@ -1,38 +1,40 @@
-import json
 import logging
 from typing import TYPE_CHECKING
 from typing import Any
-from typing import ClassVar
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 import sentry_sdk
+from escpos.printer import Dummy
+from faststream import AckPolicy
 from faststream.asgi import AsgiFastStream
 from faststream.exceptions import IgnoredException
 from faststream.message import StreamMessage
 from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
 from faststream.rabbit import TestRabbitBroker
-from pydantic import ValidationError as PydanticValidationError
-from pydantic_settings import SettingsConfigDict
 from sentry_sdk.client import NonRecordingClient
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
-from croupier.main import Message
+from croupier.main import ENABLE_EXTENDED_FLAGS
+from croupier.main import ENABLE_QUICK_EDIT_MODE
+from croupier.main import ERROR_INVALID_HANDLE
+from croupier.main import INVALID_HANDLE_VALUE
 from croupier.main import SentryMiddleware
-from croupier.main import Settings
-from croupier.main import broker
+from croupier.main import build_broker
 from croupier.main import create_app
-from croupier.main import handle_message
-from croupier.main import settings
+from croupier.main import disable_console_quick_edit
+from croupier.main import restore_console_mode
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
     from sentry_sdk.envelope import Envelope
+
+    from croupier.printing import Message
+    from croupier.settings import Settings
 
 
 class _RecordingTransport(Transport):
@@ -121,178 +123,59 @@ def _reset_sentry_global_state() -> Iterator[None]:
     sentry_sdk.get_global_scope().clear()
 
 
-@pytest.fixture
-def sample_message() -> Message:
-    return Message(
-        content=b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00",
-        network_host="192.168.1.100",
-        network_timeout=10,
-    )
-
-
-class TestHandleMessageSubscriber:
-    """Tests for handle_message as a RabbitMQ subscriber."""
-
-    async def test_subscriber_receives_message(self, sample_message: Message) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_network_cls.return_value = MagicMock()
-
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-                handle_message.mock.assert_called_once()
-
-    async def test_subscriber_opens_printer_connection(
-        self, sample_message: Message
-    ) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-            mock_network_cls.assert_called_once_with(
-                host="192.168.1.100",
-                timeout=10,
-            )
-            mock_printer.open.assert_called_once()
-
-    async def test_subscriber_sends_raw_content_to_printer(
-        self, sample_message: Message
-    ) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-            mock_printer._raw.assert_called_once_with(
-                b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00"
-            )
-
-    async def test_subscriber_closes_printer_on_exception(
-        self, sample_message: Message
-    ) -> None:
-        # DLQ-routing contract is covered by TestDlqPropagationThroughMiddleware;
-        # TestRabbitBroker does not model NACK/DLX semantics, so this test only
-        # pins the finally-block.
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_printer._raw.side_effect = RuntimeError("printer offline")
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                with pytest.raises(RuntimeError, match="printer offline"):
-                    await br.publish(sample_message, queue=settings.queue_name)
-
-            mock_printer.close.assert_called_once()
-
-    async def test_subscriber_closes_printer_on_success(
-        self, sample_message: Message
-    ) -> None:
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                await br.publish(sample_message, queue=settings.queue_name)
-
-            mock_printer.close.assert_called_once()
-
-    async def test_subscriber_swallows_close_error_after_raw_failure(
-        self, sample_message: Message
-    ) -> None:
-        # If _raw() raises and close() then also raises, the original _raw()
-        # exception must propagate. close() failure is captured + logged, not
-        # re-raised — otherwise DLQ/Sentry would key on the wrong error.
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_printer._raw.side_effect = RuntimeError("printer offline")
-            mock_printer.close.side_effect = OSError("socket already closed")
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                with pytest.raises(RuntimeError, match="printer offline"):
-                    await br.publish(sample_message, queue=settings.queue_name)
-
-            mock_printer.close.assert_called_once()
-
-    async def test_subscriber_attempts_close_when_open_fails(
-        self, sample_message: Message
-    ) -> None:
-        # open() lives inside the try/finally so a failed connect still gets a
-        # close() attempt — leaves no half-open socket if open()'s failure mode
-        # was "TCP handshake completed then errored partway." close() on a
-        # never-opened printer raises AttributeError, swallowed by the narrow
-        # except in main.py. _raw() is unreachable when open() raises.
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_printer.open.side_effect = ConnectionError("refused")
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                with pytest.raises(ConnectionError, match="refused"):
-                    await br.publish(sample_message, queue=settings.queue_name)
-
-            mock_printer._raw.assert_not_called()
-            mock_printer.close.assert_called_once()
-
-    async def test_subscriber_propagates_close_runtime_error(
-        self, sample_message: Message
-    ) -> None:
-        # Pin the deliberate trade-off documented at main.py's finally block:
-        # the close-failure except is narrow (OSError, AttributeError) so
-        # broader close-time errors (e.g. RuntimeError raised by a buggy
-        # printer driver shim) are NOT swallowed. They surface and replace
-        # the original _raw() exception via Python's finally-suppression
-        # semantics. The original exception remains accessible via __context__
-        # for diagnostics, but the DLQ/Sentry fingerprint will key on the new
-        # error. Author chose visibility-of-bugs over original-error
-        # preservation here.
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_printer._raw.side_effect = RuntimeError("printer offline")
-            mock_printer.close.side_effect = RuntimeError("driver bug")
-            mock_network_cls.return_value = mock_printer
-
-            async with TestRabbitBroker(broker) as br:
-                with pytest.raises(RuntimeError, match="driver bug") as exc_info:
-                    await br.publish(sample_message, queue=settings.queue_name)
-
-            assert exc_info.value.__context__ is not None
-            assert "printer offline" in str(exc_info.value.__context__)
-
-    async def test_close_failure_logs_separate_error(
+class TestSubscriber:
+    async def test_prints_message_content(
         self,
+        broker: RabbitBroker,
+        settings: Settings,
+        printer: Dummy,
         sample_message: Message,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # The close-failure path must emit a distinct ``logger.exception``
-        # record so the auto-enabled ``LoggingIntegration`` (level=ERROR)
-        # promotes it to a standalone Sentry event — separate from the
-        # original ``_raw()`` exception that propagates out via the
-        # finally-suppression path. With Sentry inactive in the test config,
-        # ``logger.exception`` still lands in the log stream; asserting the
-        # ``"printer close failed"`` record exists pins the distinct-signal
-        # contract without depending on Sentry being initialized.
-        with patch("croupier.main.Network") as mock_network_cls:
-            mock_printer = MagicMock()
-            mock_printer._raw.side_effect = RuntimeError("printer offline")
-            mock_printer.close.side_effect = OSError("socket already closed")
-            mock_network_cls.return_value = mock_printer
+        async with TestRabbitBroker(broker) as br:
+            await br.publish(sample_message, queue=settings.queue_name)
 
-            with caplog.at_level(logging.ERROR, logger="croupier.main"):
-                async with TestRabbitBroker(broker) as br:
-                    with pytest.raises(RuntimeError, match="printer offline"):
-                        await br.publish(sample_message, queue=settings.queue_name)
+        assert printer.output == sample_message.content
 
-            assert any(
-                "printer close failed" in rec.message
-                and rec.exc_info is not None
-                and rec.exc_info[0] is OSError
-                for rec in caplog.records
-            )
+    async def test_closes_printer_after_printing(
+        self,
+        settings: Settings,
+        sample_message: Message,
+    ) -> None:
+        printer = Dummy()
+        closed: list[bool] = []
+        printer.close = lambda: closed.append(True)
+        broker = build_broker(settings, connect=lambda _m: printer)
+
+        async with TestRabbitBroker(broker) as br:
+            await br.publish(sample_message, queue=settings.queue_name)
+
+        assert closed == [True]
+
+
+class TestSubscriberFailure:
+    async def test_printer_error_reaches_the_broker_so_message_is_rejected(
+        self,
+        settings: Settings,
+        sample_message: Message,
+    ) -> None:
+        printer = Dummy()
+        broker = build_broker(settings, connect=lambda _m: printer)
+
+        with patch.object(printer, "_raw", side_effect=OSError("printer offline")):
+            async with TestRabbitBroker(broker) as br:
+                with pytest.raises(OSError, match="printer offline"):
+                    await br.publish(sample_message, queue=settings.queue_name)
+
+    async def test_subscriber_rejects_on_error_and_never_declares_the_queue(
+        self,
+        broker: RabbitBroker,
+        settings: Settings,
+    ) -> None:
+        [subscriber] = broker.subscribers
+
+        assert subscriber.ack_policy is AckPolicy.REJECT_ON_ERROR
+        assert subscriber.queue.name == settings.queue_name
+        assert subscriber.queue.declare is False
 
 
 class TestSentryMiddleware:
@@ -457,23 +340,23 @@ def _scope_tags(scope: sentry_sdk.Scope) -> dict[str, object]:
 class TestBrokerMiddlewareWiring:
     """Tests for conditional SentryMiddleware registration on the broker."""
 
-    def test_broker_middleware_state_matches_dsn(self) -> None:
-        # The conftest test config sets sentry_dsn=null by default, so the
-        # broker was constructed at import without SentryMiddleware. Inspect
-        # the actual broker middleware list (an entry can be either the class
-        # itself when used as a factory, or an instance) rather than rebuilding
-        # the tuple — that bypasses the previous tautology version.
-        # Cast to Any so the type checker does not treat the SentryMiddleware
-        # comparison as non-overlapping — at runtime the broker keeps either
-        # the middleware class (factory) or an instance.
+    @staticmethod
+    def _has_sentry(broker: RabbitBroker) -> bool:
+        # An entry can be either the class itself (factory) or an instance.
         registered: tuple[Any, ...] = tuple(broker.middlewares)
-        registered_has_sentry = any(
+        return any(
             m is SentryMiddleware or isinstance(m, SentryMiddleware) for m in registered
         )
-        if settings.sentry_dsn is None:
-            assert not registered_has_sentry
-        else:
-            assert registered_has_sentry
+
+    def test_not_registered_without_dsn(self, settings: Settings) -> None:
+        assert settings.sentry_dsn is None
+        assert not self._has_sentry(build_broker(settings))
+
+    def test_registered_with_dsn(self, settings: Settings) -> None:
+        with_dsn = settings.model_copy(
+            update={"sentry_dsn": "https://public@example.com/1"}
+        )
+        assert self._has_sentry(build_broker(with_dsn))
 
     async def test_middleware_short_circuits_when_sentry_inactive(self) -> None:
         # Even when SentryMiddleware is wired into the broker (because
@@ -497,169 +380,37 @@ class TestBrokerMiddlewareWiring:
 
 
 class TestCreateApp:
-    """Smoke-test the bootstrap wiring.
+    """Smoke-test the bootstrap wiring."""
 
-    Pins the lite-bootstrap 0.28.0 workaround: the bundled
-    ``FastStreamBootstrapper`` instantiates ``FastStreamPrometheusInstrument``
-    before checking dependencies, which raises ``NameError`` when the
-    ``prometheus`` extra is intentionally omitted. ``create_app`` uses a
-    subclass that whitelists only the instruments that match the declared
-    dependency set; this test would fail with the upstream class.
-    """
-
-    def test_create_app_returns_asgi_faststream(self) -> None:
-        app = create_app()
+    def test_create_app_returns_asgi_faststream(self, settings: Settings) -> None:
+        app = create_app(settings)
         assert isinstance(app, AsgiFastStream)
 
 
-class TestSettingsValidation:
-    """Pin the DSN-without-environment guard and the literal constraint on
-    ``sentry_environment``. DSN shape itself is delegated to Pydantic's
-    ``HttpUrl`` — the project no longer enforces Sentry-specific DSN structure
-    at config load.
-
-    Tests instantiate a ``Settings`` subclass whose ``json_file`` points at a
-    pytest ``tmp_path`` so the production ``JsonConfigSettingsSource`` chain
-    runs end-to-end. ``Settings.model_validate({...})`` cannot be used here
-    because ``BaseSettings`` reroutes validation through
-    ``_settings_build_values``, which still pulls fields from the configured
-    JSON source and ignores the dict.
-    """
-
-    _BASE_CONFIG: ClassVar[dict[str, str]] = {
-        "queue_url": "amqp://guest:guest@127.0.0.1",
-        "queue_name": "x",
-    }
-
-    @staticmethod
-    def _build(config: dict[str, Any], tmp_path: Path) -> Settings:
-        json_path = tmp_path / ".croupier.json"
-        json_path.write_text(json.dumps(config))
-
-        class _ScopedSettings(Settings):
-            model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-                extra="ignore",
-                frozen=True,
-                json_file=json_path,
-                json_file_encoding="utf-8",
-            )
-
-        return _ScopedSettings()  # type: ignore[call-arg]
-
-    def test_sentry_dsn_accepts_well_formed(self, tmp_path: Path) -> None:
-        s = self._build(
-            {
-                **self._BASE_CONFIG,
-                "sentry_dsn": "https://public@example.com/1",
-                "sentry_environment": "production",
-            },
-            tmp_path,
-        )
-        assert s.sentry_dsn is not None
-        assert s.sentry_dsn.username == "public"
-        assert s.sentry_dsn.path == "/1"
-
-    def test_environment_defaults_to_development(self, tmp_path: Path) -> None:
-        # ``sentry_environment`` has a default of ``"development"`` so the
-        # smallest valid config covers only the broker fields. A DSN can be
-        # added without a paired environment edit — events ship under the
-        # ``development`` Sentry bucket unless the operator overrides.
-        s = self._build(self._BASE_CONFIG, tmp_path)
-        assert s.sentry_dsn is None
-        assert s.sentry_environment == "development"
-
-    def test_environment_accepts_staging_and_production(self, tmp_path: Path) -> None:
-        s = self._build(
-            {**self._BASE_CONFIG, "sentry_environment": "staging"},
-            tmp_path,
-        )
-        assert s.sentry_environment == "staging"
-        s2 = self._build(
-            {**self._BASE_CONFIG, "sentry_environment": "production"},
-            tmp_path,
-        )
-        assert s2.sentry_environment == "production"
-
-    def test_environment_rejects_invalid_literal(self, tmp_path: Path) -> None:
-        # The Literal["development","staging","production"] constraint guards
-        # alert-routing semantics: a typo like "prod" must fail loudly at
-        # config load, not silently land events in Sentry's default bucket.
-        with pytest.raises(PydanticValidationError):
-            self._build(
-                {
-                    **self._BASE_CONFIG,
-                    "sentry_dsn": "https://public@example.com/1",
-                    "sentry_environment": "prod",
-                },
-                tmp_path,
-            )
-
-    def test_extra_keys_silently_ignored(self, tmp_path: Path) -> None:
-        # extra="ignore" is deliberate — keeps configs forward
-        # compatible when fields are deprecated. Trade-off: a misspelled
-        # field name (e.g. dropping a letter from sentry_environment) is
-        # silently dropped instead of raising. Pin the policy so a future
-        # flip to "forbid" surfaces in tests, not in surprised ops.
-        s = self._build(
-            {**self._BASE_CONFIG, "snetry_environment": "production"},
-            tmp_path,
-        )
-        assert s.sentry_environment == "development"
-
-    def test_scoped_settings_subclass_overrides_parent_json_file(
-        self, tmp_path: Path
-    ) -> None:
-        # Pin the test rig: every TestSettingsValidation case relies on
-        # ``_ScopedSettings`` (subclass with its own ``model_config``)
-        # overriding ``Settings.model_config``'s ``json_file`` so the
-        # production singleton's ``~/.croupier.json`` path is bypassed. If
-        # a future Pydantic release changes how subclass ``model_config``
-        # composes with the parent, every test in this class would silently
-        # read the production settings file instead of the tmp_path JSON
-        # and assertions would degenerate. Lock the override semantics.
-        s = self._build(self._BASE_CONFIG, tmp_path)
-        assert s.queue_name == "x"
-        # ``Settings.model_config["json_file"]`` resolves to ``~/.croupier.json``
-        # at class definition; the subclass must point elsewhere or this
-        # assertion catches the regression. ``.get`` is used because
-        # ``json_file`` is non-required on ``SettingsConfigDict`` per
-        # pydantic-settings' typing.
-        assert Settings.model_config.get("json_file") != tmp_path / ".croupier.json"
-
-
 class TestDlqPropagationThroughMiddleware:
-    """Lock the regression fixed by commit 7b2d72c.
+    """SentryMiddleware must re-raise unhandled exceptions.
 
-    SentryMiddleware must re-raise unhandled exceptions so FastStream's NACK
-    machinery sees them — without re-raise, faststream's __aexit__ semantics
-    silently ACK the message and the DLQ never sees it. TestRabbitBroker does
-    not model NACK/DLX, but it does run the full middleware chain. A test
-    that publishes through a broker with SentryMiddleware wired in and
-    asserts the exception escapes the whole chain pins this contract.
+    Without re-raise, FastStream's ``__aexit__`` semantics silently ACK the
+    message and the DLQ never sees it. TestRabbitBroker does not model
+    reject/DLX, but it does run the full middleware chain, so asserting the
+    exception escapes pins the contract.
     """
 
     async def test_exception_propagates_through_broker_with_middleware(
-        self, sample_message: Message, recording_transport: _RecordingTransport
+        self,
+        settings: Settings,
+        sample_message: Message,
+        recording_transport: _RecordingTransport,
     ) -> None:
-        # Build a RabbitBroker that mirrors the production wiring (middleware
-        # registered) but uses a local handler that raises. Cannot use the
-        # module-level `broker` because it is constructed at import time
-        # without SentryMiddleware (conftest sets sentry_dsn=null).
-        local_broker = RabbitBroker(
-            settings.queue_url.unicode_string(),
-            middlewares=(SentryMiddleware,),
+        with_dsn = settings.model_copy(
+            update={"sentry_dsn": "https://public@example.com/1"}
         )
-
-        @local_broker.subscriber(
-            queue=RabbitQueue(name=settings.queue_name, declare=False),
-        )
-        async def _local_handle(body: Message) -> None:  # noqa: ARG001, RUF029
-            msg = "printer offline"
-            raise RuntimeError(msg)
-
-        async with TestRabbitBroker(local_broker) as br:
-            with pytest.raises(RuntimeError, match="printer offline"):
-                await br.publish(sample_message, queue=settings.queue_name)
+        printer = Dummy()
+        with patch.object(printer, "_raw", side_effect=OSError("printer offline")):
+            broker = build_broker(with_dsn, connect=lambda _m: printer)
+            async with TestRabbitBroker(broker) as br:
+                with pytest.raises(OSError, match="printer offline"):
+                    await br.publish(sample_message, queue=settings.queue_name)
 
         sentry_sdk.flush(timeout=2)
         assert recording_transport.events, "middleware did not capture event"
@@ -681,3 +432,146 @@ class TestSentryNoiseControl:
         logging.getLogger("croupier.main").error("still captured")
         sentry_sdk.flush(timeout=2)
         assert len(recording_transport.events) == 1
+
+
+class TestDisableConsoleQuickEdit:
+    """Tests for disable_console_quick_edit."""
+
+    @staticmethod
+    def _kernel32(*, handle: int | None = 1234, mode: int = 0x00F7) -> MagicMock:
+        kernel32 = MagicMock()
+        kernel32.CreateFileW.return_value = handle
+
+        def fake_get_console_mode(_handle: int, mode_ref: MagicMock) -> int:
+            mode_ref.value = mode
+            return 1
+
+        kernel32.GetConsoleMode.side_effect = fake_get_console_mode
+        kernel32.SetConsoleMode.return_value = 1
+        kernel32.CloseHandle.return_value = 1
+        return kernel32
+
+    def _run(
+        self, kernel32: MagicMock, *, last_error: int = 5
+    ) -> tuple[MagicMock, MagicMock]:
+        with (
+            patch("croupier.main.sys.platform", "win32"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+            patch("croupier.main.atexit") as mock_atexit,
+            patch("croupier.main.logger") as mock_logger,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            mock_ctypes.c_uint32.return_value = MagicMock()
+            mock_ctypes.byref.side_effect = lambda x: x
+            mock_ctypes.get_last_error.return_value = last_error
+            disable_console_quick_edit()
+        return mock_atexit, mock_logger
+
+    def test_is_noop_on_non_windows(self) -> None:
+        with (
+            patch("croupier.main.sys.platform", "linux"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+        ):
+            disable_console_quick_edit()
+        mock_ctypes.WinDLL.assert_not_called()
+
+    def test_clears_quick_edit_flag_on_windows(self) -> None:
+        kernel32 = self._kernel32()
+        self._run(kernel32)
+
+        new_mode = kernel32.SetConsoleMode.call_args.args[1]
+        assert not new_mode & ENABLE_QUICK_EDIT_MODE
+        assert new_mode & ENABLE_EXTENDED_FLAGS
+
+    def test_opens_conin_instead_of_std_handle(self) -> None:
+        kernel32 = self._kernel32()
+        self._run(kernel32)
+
+        assert kernel32.CreateFileW.call_args.args[0] == "CONIN$"
+        kernel32.CloseHandle.assert_called_once_with(1234)
+
+    def test_registers_restore_of_original_mode(self) -> None:
+        kernel32 = self._kernel32(mode=0x00F7)
+        mock_atexit, _ = self._run(kernel32)
+
+        mock_atexit.register.assert_called_once_with(restore_console_mode, 0x00F7)
+
+    def test_restore_resets_original_mode(self) -> None:
+        kernel32 = self._kernel32()
+        with (
+            patch("croupier.main.ctypes") as mock_ctypes,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            restore_console_mode(0x00F7)
+
+        assert kernel32.SetConsoleMode.call_args.args[1] == 0x00F7
+
+    def test_skips_when_no_console(self) -> None:
+        kernel32 = self._kernel32(handle=INVALID_HANDLE_VALUE)
+        mock_atexit, mock_logger = self._run(kernel32, last_error=ERROR_INVALID_HANDLE)
+
+        mock_logger.warning.assert_not_called()
+
+        kernel32.GetConsoleMode.assert_not_called()
+        kernel32.SetConsoleMode.assert_not_called()
+        kernel32.CloseHandle.assert_not_called()
+        mock_atexit.register.assert_not_called()
+
+    def test_logs_when_conin_open_fails_for_other_reason(self) -> None:
+        kernel32 = self._kernel32(handle=INVALID_HANDLE_VALUE)
+        mock_atexit, mock_logger = self._run(kernel32, last_error=5)
+
+        mock_logger.warning.assert_called_once()
+        kernel32.GetConsoleMode.assert_not_called()
+        mock_atexit.register.assert_not_called()
+
+    def test_logs_when_close_handle_fails(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.CloseHandle.return_value = 0
+        mock_atexit, mock_logger = self._run(kernel32)
+
+        mock_logger.warning.assert_called_once()
+        mock_atexit.register.assert_called_once()
+
+    def test_restore_logs_when_set_console_mode_fails(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.SetConsoleMode.return_value = 0
+        with (
+            patch("croupier.main.ctypes") as mock_ctypes,
+            patch("croupier.main.logger") as mock_logger,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            mock_ctypes.get_last_error.return_value = 5
+            restore_console_mode(0x00F7)
+
+        mock_logger.warning.assert_called_once()
+
+    def test_logs_and_continues_when_win32_call_fails(self) -> None:
+        with (
+            patch("croupier.main.sys.platform", "win32"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+            patch("croupier.main.logger") as mock_logger,
+        ):
+            mock_ctypes.WinDLL.side_effect = OSError("boom")
+            disable_console_quick_edit()
+        mock_logger.warning.assert_called_once()
+
+    def test_logs_when_get_console_mode_fails(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.GetConsoleMode.side_effect = None
+        kernel32.GetConsoleMode.return_value = 0
+        mock_atexit, mock_logger = self._run(kernel32)
+
+        mock_logger.warning.assert_called_once()
+        kernel32.SetConsoleMode.assert_not_called()
+        mock_atexit.register.assert_not_called()
+        kernel32.CloseHandle.assert_called_once_with(1234)
+
+    def test_logs_when_set_console_mode_returns_zero(self) -> None:
+        kernel32 = self._kernel32()
+        kernel32.SetConsoleMode.return_value = 0
+        mock_atexit, mock_logger = self._run(kernel32)
+
+        mock_logger.warning.assert_called_once()
+        mock_atexit.register.assert_not_called()
+        kernel32.CloseHandle.assert_called_once_with(1234)

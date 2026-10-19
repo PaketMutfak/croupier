@@ -9,7 +9,6 @@ requires-python = ">=3.14"
 dependencies = [
   "faststream[rabbit]==0.6.7",
   "lite-bootstrap[faststream-logging,faststream-sentry]==0.28.1",
-  "pydantic-settings==2.14.1",
   "python-escpos==3.1",
   "uvicorn==0.46.0",
 ]

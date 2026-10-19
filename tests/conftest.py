@@ -1,29 +1,46 @@
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-_CONFIG_PATH = Path.home() / ".croupier.json"
+import pytest
+from escpos.printer import Dummy
+
+from croupier.main import build_broker
+from croupier.printing import Message
+from croupier.settings import Settings
+from croupier.settings import load_settings
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from faststream.rabbit import RabbitBroker
+
 _TEST_CONFIG = {
     "queue_url": "amqp://guest:guest@127.0.0.1",
-    "queue_name": "test.receipt.dispatch",
+    "queue_name": "receipt.dispatch.test-branch",
 }
 
 
-def pytest_configure(config: object) -> None:
-    """Back up existing config, write test config.
-
-    Must run before module-level Settings() runs.
-    """
-    backup = None
-    if _CONFIG_PATH.exists():
-        backup = _CONFIG_PATH.read_text()
-    _CONFIG_PATH.write_text(json.dumps(_TEST_CONFIG))
-    config._croupier_original_config = backup  # type: ignore[attr-defined]
+@pytest.fixture
+def settings(tmp_path: Path) -> Settings:
+    path = tmp_path / "croupier.json"
+    path.write_text(json.dumps(_TEST_CONFIG))
+    return load_settings(path)
 
 
-def pytest_unconfigure(config: object) -> None:
-    """Restore original config or remove test config."""
-    original = getattr(config, "_croupier_original_config", None)
-    if original is not None:
-        _CONFIG_PATH.write_text(original)
-    else:
-        _CONFIG_PATH.unlink(missing_ok=True)
+@pytest.fixture
+def printer() -> Dummy:
+    return Dummy()
+
+
+@pytest.fixture
+def broker(settings: Settings, printer: Dummy) -> RabbitBroker:
+    return build_broker(settings, connect=lambda _message: printer)
+
+
+@pytest.fixture
+def sample_message() -> Message:
+    return Message(
+        content=b"\x1bt\x00Hello World!\x1bd\x06\x1dV\x00",
+        network_host="192.168.1.100",
+        network_timeout=10,
+    )

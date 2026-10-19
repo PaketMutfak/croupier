@@ -16,7 +16,7 @@ Croupier reads its settings from `~/.croupier.json`. Copy the example config shi
 cp .croupier.json ~/.croupier.json
 ```
 
-Edit the file if your RabbitMQ instance is running on a different host or with different credentials.
+Edit the file if your RabbitMQ instance is running on a different host or with different credentials. Replace `<branch_id>` in `queue_name` with the branch whose queue this instance consumes; the producing side creates these queues (see `docs/adr/0001-producers-own-receipt-queue-topology.md`).
 
 ### 3. Start the server
 
@@ -53,7 +53,7 @@ Croupier is a FastStream RabbitMQ subscriber wrapped by [`lite-bootstrap`](https
 - A `/health/` endpoint that pings the broker (lite-bootstrap default; not overridden)
 - An ASGI surface (`AsgiFastStream`) so the worker runs under `uvicorn`
 
-There is no FastAPI HTTP route. Receipts arrive only via the RabbitMQ queue declared at startup. The `POST /handle-message` route that earlier versions exposed has been removed.
+There is no FastAPI HTTP route. Receipts arrive only via the Receipt queue, which the producing side owns and Croupier never declares. The `POST /handle-message` route that earlier versions exposed has been removed.
 
 Prometheus metrics, OpenTelemetry tracing, and Pyroscope profiling are intentionally not wired. Croupier runs on branch computers (NAT'd edge hosts): a `/metrics` endpoint cannot be scraped from a central Prometheus, and the service is a leaf — AMQP in, raw TCP bytes to the printer — so distributed traces have no downstream hops to stitch. Sentry (push, outbound HTTPS) and structlog JSON-on-stdout are the supported observability surface. Continuous profiling (Pyroscope) is tracked as future work in [#46](https://github.com/PaketMutfak/croupier/issues/46).
 

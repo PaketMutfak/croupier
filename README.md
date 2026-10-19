@@ -16,7 +16,7 @@ Croupier reads its settings from `~/.croupier.json`. Copy the example config shi
 cp .croupier.json ~/.croupier.json
 ```
 
-Edit the file if your RabbitMQ instance is running on a different host or with different credentials.
+Edit the file if your RabbitMQ instance is running on a different host or with different credentials. Replace `<branch_id>` in `queue_name` with the branch whose queue this instance consumes; the producing side creates these queues (see `docs/adr/0001-producers-own-receipt-queue-topology.md`).
 
 ### 3. Start the server
 

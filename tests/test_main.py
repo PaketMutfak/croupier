@@ -143,7 +143,7 @@ class TestSubscriber:
     ) -> None:
         printer = Dummy()
         closed: list[bool] = []
-        printer.close = lambda: closed.append(True)
+        printer.close = lambda: closed.append(True)  # type: ignore[method-assign]
         broker = build_broker(settings, connect=lambda _m: printer)
 
         async with TestRabbitBroker(broker) as br:
@@ -172,10 +172,11 @@ class TestSubscriberFailure:
         settings: Settings,
     ) -> None:
         [subscriber] = broker.subscribers
+        queue = subscriber.queue  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
 
         assert subscriber.ack_policy is AckPolicy.REJECT_ON_ERROR
-        assert subscriber.queue.name == settings.queue_name
-        assert subscriber.queue.declare is False
+        assert queue.name == settings.queue_name
+        assert queue.declare is False
 
 
 class TestSentryMiddleware:

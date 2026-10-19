@@ -36,12 +36,12 @@ def print_receipt(
     """
     printer = connect(message)
     try:
-        printer.open()
+        printer.open()  # type: ignore[no-untyped-call]
         # python-escpos has no public raw-bytes method.
         printer._raw(message.content)  # noqa: SLF001  # pylint: disable=W0212
     finally:
         try:
-            printer.close()
+            printer.close()  # type: ignore[no-untyped-call]
         # PEP 758 unparenthesized except — requires Python 3.14+. close() on a
         # printer whose open() never completed raises AttributeError; narrow to
         # socket cleanup errors so programming bugs still surface.

@@ -150,3 +150,18 @@ class TestDisableConsoleQuickEdit:
             disable_console_quick_edit()
         kernel32.GetConsoleMode.assert_not_called()
         kernel32.SetConsoleMode.assert_not_called()
+
+    def test_logs_when_set_console_mode_returns_zero(self) -> None:
+        kernel32 = MagicMock()
+        kernel32.GetStdHandle.return_value = 1234
+        kernel32.GetConsoleMode.return_value = 1
+        kernel32.SetConsoleMode.return_value = 0
+        with (
+            patch("croupier.main.sys.platform", "win32"),
+            patch("croupier.main.ctypes") as mock_ctypes,
+            patch("croupier.main.logger") as mock_logger,
+        ):
+            mock_ctypes.WinDLL.return_value = kernel32
+            mock_ctypes.get_last_error.return_value = 5
+            disable_console_quick_edit()
+        mock_logger.warning.assert_called_once()

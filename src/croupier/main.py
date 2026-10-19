@@ -120,7 +120,10 @@ def _clear_quick_edit_flag() -> None:
     ):
         return  # Not attached to a console (e.g. redirected or windowless).
     new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
-    kernel32.SetConsoleMode(handle, new_mode)
+    if not kernel32.SetConsoleMode(handle, new_mode):
+        error = ctypes.get_last_error()  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+        msg = f"SetConsoleMode failed (error {error})"
+        raise OSError(msg)
 
 
 def main() -> None:

@@ -1,7 +1,4 @@
 {
-    "dlq_name": "receipt.dispatch.dlq",
-    "dlx_name": "receipt.dispatch.dlx",
-    "exchange_name": "receipt.dispatch",
-    "queue_name": "receipt.dispatch",
+    "queue_name": "receipt.dispatch.<branch_id>",
     "queue_url": "amqp://guest:guest@127.0.0.1"
 }

@@ -30,8 +30,8 @@ def print_receipt(
     Blocking. Always closes the connection; connection and write errors propagate.
     """
     printer = connect(message)
-    printer.open()
     try:
+        printer.open()
         # python-escpos has no public raw-bytes method.
         printer._raw(message.content)  # noqa: SLF001  # pylint: disable=W0212
     finally:

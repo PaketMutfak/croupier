@@ -1,6 +1,6 @@
 # Glossary
 
-**Message** — What Croupier consumes: raw ESC/POS `content` bytes plus the printer's network coordinates (`network_host`, `network_timeout`). Arrives from the RabbitMQ queue or `POST /handle-message`.
+**Message** — What Croupier consumes: raw ESC/POS `content` bytes plus the printer's network coordinates (`network_host`, `network_timeout`). Arrives only from the RabbitMQ queue.
 
 **Receipt printing** — Sending a Message's bytes to its printer over the network and closing the connection. Blocking; failures propagate to the caller. Lives in `croupier.printing`.
 

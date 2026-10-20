@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import pytest
 from escpos.printer import Dummy
 
-from croupier.main import build_app
+from croupier.main import build_broker
 from croupier.printing import Message
 from croupier.settings import Settings
 from croupier.settings import load_settings
@@ -12,7 +12,7 @@ from croupier.settings import load_settings
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from fastapi import FastAPI
+    from faststream.rabbit import RabbitBroker
 
 _TEST_CONFIG = {
     "queue_url": "amqp://guest:guest@127.0.0.1",
@@ -33,8 +33,8 @@ def printer() -> Dummy:
 
 
 @pytest.fixture
-def app(settings: Settings, printer: Dummy) -> FastAPI:
-    return build_app(settings, connect=lambda _message: printer)
+def broker(settings: Settings, printer: Dummy) -> RabbitBroker:
+    return build_broker(settings, connect=lambda _message: printer)
 
 
 @pytest.fixture

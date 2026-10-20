@@ -7,16 +7,16 @@ license = "MIT"
 authors = [{ name = "Hasan Sezer Taşan", email = "hasansezertasan@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
-  "fastapi[standard]==0.136.1",
   "faststream[rabbit]==0.6.7",
+  "lite-bootstrap[faststream-logging,faststream-sentry]==0.28.1",
   "python-escpos==3.1",
+  "uvicorn==0.46.0",
 ]
 
 
 [dependency-groups]
 dev = [
   "basedpyright==1.39.3",
-  "mypy==2.0.0",
   "parametrize-from-file==0.21.0",
   "prek==0.3.13",
   "pyrefly==1.0.0",
@@ -114,9 +114,7 @@ python-version = "3.14"
 [tool.mypy]
 files = ["src", "tests"]
 ignore_missing_imports = true
-install_types = true
 mypy_path = ["src"]
-non_interactive = true
 pretty = true
 python_version = "3.14"
 strict = true

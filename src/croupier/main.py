@@ -4,22 +4,22 @@ import ctypes
 import logging
 import sys
 from contextlib import contextmanager
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import NoReturn
+from typing import override
 
+import sentry_sdk
 import uvicorn
-from fastapi import FastAPI
-from fastapi import Request
-from fastapi.middleware.cors import CORSMiddleware
 from faststream import AckPolicy
+from faststream import BaseMiddleware
+from faststream.asgi import AsgiFastStream
+from faststream.exceptions import IgnoredException
+from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
-from faststream.rabbit.fastapi import RabbitRouter
-from starlette.responses import Response
-from starlette.status import HTTP_204_NO_CONTENT
-from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
+from lite_bootstrap import FastStreamBootstrapper
+from lite_bootstrap import FastStreamConfig
+from sentry_sdk.integrations.logging import ignore_logger
 
 from croupier.printing import Message
 from croupier.printing import PrinterFactory
@@ -29,55 +29,21 @@ from croupier.settings import Settings
 from croupier.settings import load_settings
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+    from collections.abc import Callable
     from collections.abc import Iterator
 
-
-def build_app(
-    settings: Settings,
-    connect: PrinterFactory = connect_network,
-) -> FastAPI:
-    """Assemble the app that consumes the receipt queue and serves the HTTP routes.
-
-    The producing side owns the RabbitMQ topology (exchange, per-branch queues,
-    DLX/DLQ, TTL), so the subscriber binds to the existing queue with ``declare=False``
-    and never declares anything; see ``docs/adr/0001``.
-
-    Failure path: ``print_receipt`` errors propagate out of ``handle_message``.
-    ``AckPolicy.REJECT_ON_ERROR`` then rejects the message without requeue, the
-    queue's dead-letter arguments route it to ``receipt.dispatch.dlq``, and the
-    producing side alerts on it. Swallowing errors or requeuing here would break that.
-    Over HTTP the same error is a 500.
-    """
-    router = RabbitRouter(settings.queue_url.unicode_string())
-
-    @router.subscriber(
-        queue=RabbitQueue(name=settings.queue_name, declare=False),
-        ack_policy=AckPolicy.REJECT_ON_ERROR,
-    )
-    @router.post("/handle-message")
-    async def handle_message(body: Message) -> None:
-        await asyncio.to_thread(print_receipt, body, connect)
-
-    @router.get("/")
-    async def health(request: Request) -> Response:
-        if await request.state.broker.ping(6):
-            return Response(status_code=HTTP_204_NO_CONTENT)
-        return Response(status_code=HTTP_500_INTERNAL_SERVER_ERROR)
-
-    app = FastAPI(debug=True)
-    app.state.broker = router.broker
-    app.include_router(router)
-    app.add_middleware(
-        CORSMiddleware,  # ty:ignore[invalid-argument-type]
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-        allow_credentials=True,
-    )
-    return app
+    from faststream.message import StreamMessage
 
 
 logger = logging.getLogger(__name__)
+
+# FastStream logs every handler failure on its own ``faststream`` logger. The
+# Sentry SDK's auto-enabled LoggingIntegration would promote that ERROR record
+# to a second event with no exception and no ``correlation_id``, duplicating the
+# one ``SentryMiddleware`` already emits. Breadcrumbs and events from this
+# logger are dropped; the middleware event is the canonical one.
+ignore_logger("faststream")
 
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 GENERIC_READ = 0x80000000
@@ -200,21 +166,108 @@ def restore_console_mode(original_mode: int) -> None:
         logger.warning("Could not restore console mode", exc_info=True)
 
 
-def _configure_logging() -> None:
-    file_handler = RotatingFileHandler(
-        filename=Path.home() / ".croupier.log",
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
+class SentryMiddleware(BaseMiddleware[Any, bytes]):
+    @override
+    async def consume_scope(
+        self,
+        call_next: Callable[[StreamMessage[bytes]], Awaitable[Any]],
+        msg: StreamMessage[bytes],
+    ) -> Any:
+        # Skip wrapping when sentry_sdk has no active client — only the
+        # ``sentry_dsn=None`` path flips ``is_initialized()`` to False
+        # (lite-bootstrap never calls ``sentry_sdk.init`` so the global stays a
+        # ``NonRecordingClient``). A misconfigured-but-syntactically-valid DSN
+        # leaves ``is_initialized()`` True with a real ``_Client``; events still
+        # try to ship and surface as transport-layer warnings, which is the
+        # loud behavior we want.
+        if not sentry_sdk.is_initialized():
+            return await call_next(msg)
+        with sentry_sdk.isolation_scope() as scope:
+            # Per-message correlation_id as a searchable tag so a log line
+            # carrying ``correlation_id=...`` can be pivoted to the matching
+            # Sentry event in one filter. High cardinality is fine here —
+            # the index is used for lookup, never for groupby aggregation.
+            if msg.correlation_id:
+                scope.set_tag("correlation_id", msg.correlation_id)
+            try:
+                return await call_next(msg)
+            except IgnoredException:
+                raise
+            except Exception:
+                # Sentry SDK's auto-enabled LoggingIntegration promotes
+                # ERROR-and-up records to standalone events; logger.exception
+                # is enough — no explicit capture_exception() needed. Exception
+                # class is filterable in the Sentry UI via the built-in
+                # ``error.type`` index, so no custom tag is needed.
+                logger.exception("message handler failed")
+                # Re-raise so FastStream's reject -> DLX/DLQ path runs.
+                raise
+
+
+def build_broker(
+    settings: Settings,
+    connect: PrinterFactory = connect_network,
+) -> RabbitBroker:
+    """Assemble the broker that consumes the receipt queue.
+
+    The producing side owns the RabbitMQ topology (exchange, per-branch queues,
+    DLX/DLQ, TTL), so the subscriber binds to the existing queue with ``declare=False``
+    and never declares anything; see ``docs/adr/0001``.
+
+    Failure path: ``print_receipt`` errors propagate out of ``handle_message``.
+    ``AckPolicy.REJECT_ON_ERROR`` then rejects the message without requeue, the
+    queue's dead-letter arguments route it to ``receipt.dispatch.dlq``, and the
+    producing side alerts on it. ``SentryMiddleware`` re-raises, so that still holds.
+    """
+    broker = RabbitBroker(
+        settings.queue_url.unicode_string(),
+        middlewares=(SentryMiddleware,) if settings.sentry_dsn else (),
     )
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"),
+
+    @broker.subscriber(
+        queue=RabbitQueue(name=settings.queue_name, declare=False),
+        ack_policy=AckPolicy.REJECT_ON_ERROR,
     )
-    for name in ("faststream", "faststream.access.rabbit", __name__):
-        logging.getLogger(name).addHandler(file_handler)
+    async def handle_message(body: Message) -> None:
+        await asyncio.to_thread(print_receipt, body, connect)
+
+    return broker
+
+
+def create_app(
+    settings: Settings | None = None,
+    connect: PrinterFactory = connect_network,
+) -> AsgiFastStream:
+    """ASGI app factory that wires Sentry and structlog through lite-bootstrap.
+
+    Compatible with ``uvicorn --factory``. Bootstrap reconfigures global state
+    (structlog, Sentry init); call once per process.
+    """
+    settings = settings if settings is not None else load_settings()
+    config = FastStreamConfig(
+        application=AsgiFastStream(build_broker(settings, connect)),
+        service_name="croupier",
+        service_environment=settings.sentry_environment,
+        # Required for the LoggingInstrument to take effect (structlog ->
+        # JSON stdout). Toggle if a future requirement asks for plain
+        # logging in development.
+        service_debug=False,
+        sentry_dsn=(
+            settings.sentry_dsn.unicode_string() if settings.sentry_dsn else None
+        ),
+        # AsyncioIntegration is deliberately NOT registered: on every SIGTERM
+        # shutdown it reported the cancelled aiormq channel tasks as four
+        # ``ChannelClosed`` error events per process. The auto-enabled
+        # LoggingIntegration handles ERROR-and-up log records, which is how
+        # SentryMiddleware emits events.
+        # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
+        # after init.
+        sentry_tags={"queue_name": settings.queue_name},
+    )
+    return FastStreamBootstrapper(config).bootstrap()
 
 
 def main() -> None:
-    settings = load_settings()
-    _configure_logging()
+    app = create_app()
     disable_console_quick_edit()
-    uvicorn.run(build_app(settings))
+    uvicorn.run(app)

@@ -1,17 +1,21 @@
 from pathlib import Path
 from typing import ClassVar
+from typing import Literal
 
 from pydantic import AmqpDsn
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import HttpUrl
 
 DEFAULT_SETTINGS_PATH = Path.home() / ".croupier.json"
 
 
 class Settings(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", frozen=True)
     queue_url: AmqpDsn
     queue_name: str
+    sentry_dsn: HttpUrl | None = None
+    sentry_environment: Literal["development", "staging", "production"] = "development"
 
 
 def load_settings(path: Path | None = None) -> Settings:

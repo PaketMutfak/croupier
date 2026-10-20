@@ -1,4 +1,6 @@
 {
     "queue_name": "receipt.dispatch.<branch_id>",
-    "queue_url": "amqp://guest:guest@127.0.0.1"
+    "queue_url": "amqp://guest:guest@127.0.0.1",
+    "sentry_dsn": null,
+    "sentry_environment": "development"
 }

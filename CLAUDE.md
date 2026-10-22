@@ -55,7 +55,9 @@ Domain terms are defined in `GLOSSARY.md`. Nothing is created at import time. Th
 - **Logging** — structlog → JSON on stdout via lite-bootstrap's `LoggingInstrument` (`service_debug=False`). No file handler.
 - **Sentry noise control** — `AsyncioIntegration` is intentionally NOT registered (it emitted four `ChannelClosed` events per clean shutdown from cancelled aiormq tasks), and `ignore_logger("faststream")` is called at import so FastStream's own failure log does not duplicate the `SentryMiddleware` event.
 
-**Queue topology is owned by the producing side**: exchange `receipt.dispatch`, per-branch queues, DLX/DLQ and TTL. Croupier only consumes (`declare=False`, `AckPolicy.REJECT_ON_ERROR`) so failures dead-letter to its DLQ, and the Message JSON wire format must not change. See `docs/adr/0001-producers-own-receipt-queue-topology.md`.
+**Queue topology is owned by the producing side**: exchange `receipt.dispatch`, per-branch queues, DLX/DLQ and TTL. Croupier only consumes (`declare=False`, `AckPolicy.REJECT_ON_ERROR`) so failures dead-letter to its DLQ, and the Message JSON wire format must not change. See `context/queue-topology.md`.
+
+**Decision history** lives in `context/` (start at `context/index.md`): queue topology and failure routing, the Message wire format, the Windows console workaround and how the runner ships. Check it before changing any of those.
 
 `main.py` at the project root is just the entrypoint that calls `croupier.main.main()`.
 
@@ -73,3 +75,13 @@ Sentry tests use a `_RecordingTransport` plus `sentry_sdk.init(...)` per-test. A
 - **sentry-sdk** — error tracking (transitively via `lite-bootstrap`)
 - **python-escpos** — ESC/POS printer protocol
 - **pydantic** — Settings and Message models
+
+## Keep the Why
+
+This project records the reasoning behind its code with the Keep the Why
+skill (https://keepthewhy.com) — the `.keep-the-why` file at the project
+root is its config. Before doing anything else in a session, whatever the
+first request is about, load the skill: in Claude Code, invoke the
+`keep-the-why` skill (Skill tool); in any other agent, read
+`.claude/skills/keep-the-why/SKILL.md` and follow it, including the
+`references/*.md` files it points to for the situation at hand.

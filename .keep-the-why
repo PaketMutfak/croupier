@@ -1,0 +1,14 @@
+This is machine-readable project state for the Keep the Why skill
+(https://keepthewhy.com). See context/index.md, or this project's own
+README, for what Keep the Why actually is.
+
+<!-- keep-the-why:config -->
+- id: PaketMutfak---croupier
+- canonical: https://github.com/PaketMutfak/croupier
+- context: `context/`
+- init: complete
+- context-schema: 0.20.1
+- capture-confirmation: confirm-when-unsure
+- source-reference: never
+- dashboard-state: https://paketmutfak.github.io/croupier/dashboard/live/state.json
+<!-- /keep-the-why:config -->

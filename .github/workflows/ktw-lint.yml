@@ -1,0 +1,16 @@
+name: ktw-lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ktw-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: oliver-zehentleitner/keep-the-why@2771046616a3c6bcd62916ed072f71feb5afd222  # lint-v0.20.3.0
+        with:
+          path: "."
+          strict: "false"

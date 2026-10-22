@@ -278,6 +278,32 @@ class TestBounds:
         assert not any(b"event-0" in content for content in contents)
         assert any(b"event-2" in content for content in contents)
 
+    def test_eviction_failure_still_delivers_the_new_event(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        network.status = None
+        transport = start(max_files=1)
+        _capture(transport, "event-0")
+        network.status = 200
+        original = Path.unlink
+
+        def locked(self: Path, *, missing_ok: bool = False) -> None:
+            if "event-0" in self.read_text(errors="ignore"):
+                msg = "locked by another process"
+                raise PermissionError(msg)
+            original(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", locked)
+        _capture(transport, "event-1")
+        monkeypatch.setattr(Path, "unlink", original)
+
+        remaining = [path.read_bytes() for path in _spooled(spool_dir)]
+        assert all(b"event-1" not in content for content in remaining)
+
     def test_each_dsn_gets_its_own_spool(
         self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
     ) -> None:

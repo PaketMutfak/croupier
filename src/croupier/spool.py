@@ -237,7 +237,12 @@ class SpoolTransport(HttpTransport):
         # later delete is a no-op.
         for stale in files[: max(0, len(files) - self.max_files)]:
             logger.warning("Spool full, evicting oldest envelope %s", stale)
-            stale.unlink(missing_ok=True)
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                # Locked or read-only: the cap is soft, and the capture that
+                # triggered this must still be submitted.
+                logger.warning("Cannot evict %s", stale, exc_info=True)
 
     def _replay_forever(self) -> None:
         while not self._stopped.wait(self.replay_interval):

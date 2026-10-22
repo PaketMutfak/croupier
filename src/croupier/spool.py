@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _SUFFIX = ".envelope"
 _TEMP_SUFFIX = ".tmp"
+_HTTP_OK_MIN = 200
 _HTTP_OK_MAX = 299
 _PERMANENT_REJECTIONS = frozenset({400, 401, 403, 413})
 DEFAULT_MAX_FILES = 500
@@ -49,7 +50,8 @@ def _is_retryable(status: int | None) -> bool:
     """
     if status is None:
         return True
-    return not (200 <= status <= _HTTP_OK_MAX or status in _PERMANENT_REJECTIONS)
+    delivered = _HTTP_OK_MIN <= status <= _HTTP_OK_MAX
+    return not (delivered or status in _PERMANENT_REJECTIONS)
 
 
 def _is_client_report(envelope: Envelope) -> bool:

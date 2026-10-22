@@ -292,7 +292,7 @@ class TestBounds:
         original = Path.unlink
 
         def locked(self: Path, *, missing_ok: bool = False) -> None:
-            if "event-0" in self.read_text(errors="ignore"):
+            if "event-0" in self.read_text(encoding="utf-8", errors="ignore"):
                 msg = "locked by another process"
                 raise PermissionError(msg)
             original(self, missing_ok=missing_ok)

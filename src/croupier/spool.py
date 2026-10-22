@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 _SUFFIX = ".envelope"
 _TEMP_SUFFIX = ".tmp"
-_HTTP_TOO_MANY_REQUESTS = 429
-_HTTP_SERVER_ERROR = 500
+_HTTP_OK_MAX = 299
+_PERMANENT_REJECTIONS = frozenset({400, 401, 403, 413})
 DEFAULT_MAX_FILES = 500
 DEFAULT_REPLAY_INTERVAL = 60.0
 
@@ -43,13 +43,13 @@ def _is_retryable(status: int | None) -> bool:
     """Whether an envelope should stay on disk after a send attempt.
 
     ``None`` means no HTTP response arrived (dead link, or the SDK skipped the
-    send while rate limited). Rate limits and server errors are transient;
-    other non-2xx answers are permanent, and retrying them forever would only
-    block the spool.
+    send while rate limited). Only a 2xx or a permanent rejection (400, 401,
+    403, 413) is definitive; anything else, such as 408, 429 or 5xx, may be
+    transient, so the file stays and the spool cap bounds the backlog.
     """
     if status is None:
         return True
-    return status == _HTTP_TOO_MANY_REQUESTS or status >= _HTTP_SERVER_ERROR
+    return not (200 <= status <= _HTTP_OK_MAX or status in _PERMANENT_REJECTIONS)
 
 
 def _is_client_report(envelope: Envelope) -> bool:
@@ -137,7 +137,12 @@ class SpoolTransport(HttpTransport):
             except Exception:  # noqa: BLE001
                 # A power cut can leave a truncated file; it is unrecoverable.
                 logger.warning("Dropping unreadable spooled envelope %s", path)
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    # Read-only or locked: keep it and retry next replay
+                    # rather than stop the service from starting.
+                    logger.warning("Cannot delete %s", path, exc_info=True)
                 self._release(path)
                 continue
             self._submit(path, envelope)
@@ -206,11 +211,23 @@ class SpoolTransport(HttpTransport):
             # replay can never pick it up ahead of this capture.
             self._claim(final)
             temp.replace(final)
+            self._fsync_dir()
         except OSError:
             self._release(final)
             temp.unlink(missing_ok=True)
             raise
         return final
+
+    def _fsync_dir(self) -> None:
+        # The rename is only durable once the directory entry is flushed.
+        # Windows cannot open a directory, and NTFS journals the rename.
+        if os.name == "nt":
+            return
+        fd = os.open(self._dir, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def _evict(self) -> None:
         files = sorted(self._dir.glob(f"*{_SUFFIX}"))

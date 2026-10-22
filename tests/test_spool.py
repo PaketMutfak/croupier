@@ -135,7 +135,7 @@ class TestSpooling:
 
         assert len(_spooled(spool_dir)) == 1
 
-    @pytest.mark.parametrize("status", [429, 500, 502, 503])
+    @pytest.mark.parametrize("status", [408, 429, 500, 502, 503])
     def test_transient_http_status_keeps_the_event(
         self,
         start: Callable[..., SpoolTransport],
@@ -235,6 +235,31 @@ class TestReplay:
         transport.flush(timeout=5)
 
         assert _spooled(spool_dir) == []
+
+    def test_corrupt_file_that_cannot_be_deleted_does_not_break_replay(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        network.status = None
+        transport = start()
+        _capture(transport)
+        (corrupt,) = _spooled(spool_dir)
+        corrupt.write_bytes(b"\x00 truncated by a power cut")
+        original = Path.unlink
+
+        def locked(self: Path, *, missing_ok: bool = False) -> None:
+            if self.suffix == ".envelope":
+                msg = "read-only"
+                raise PermissionError(msg)
+            original(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", locked)
+        transport.replay()
+
+        assert _spooled(spool_dir) == [corrupt]
 
 
 class TestBounds:
@@ -407,7 +432,7 @@ class TestDegradation:
         transport.flush(timeout=5)
         assert len(_spooled(spool_dir)) == 1
 
-        monkeypatch.undo()
+        monkeypatch.setattr(Path, "read_bytes", original)
         transport.replay()
         transport.flush(timeout=5)
         assert _spooled(spool_dir) == []

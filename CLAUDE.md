@@ -82,6 +82,8 @@ This project records the reasoning behind its code with the Keep the Why
 skill (https://keepthewhy.com) — the `.keep-the-why` file at the project
 root is its config. Before doing anything else in a session, whatever the
 first request is about, load the skill: in Claude Code, invoke the
-`keep-the-why` skill (Skill tool); in any other agent, read
-`.claude/skills/keep-the-why/SKILL.md` and follow it, including the
-`references/*.md` files it points to for the situation at hand.
+`keep-the-why` skill (Skill tool). The skill is not vendored in this repo:
+Claude Code gets it from the `keep-the-why` plugin enabled in
+`.claude/settings.json`. Any other agent has to install it first
+(`npx skills add https://github.com/oliver-zehentleitner/keep-the-why/tree/latest/skills/keep-the-why`,
+see https://keepthewhy.com/installation/), then read its `SKILL.md` and follow it.

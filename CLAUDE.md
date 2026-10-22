@@ -69,7 +69,7 @@ Sentry tests use a `_RecordingTransport` plus `sentry_sdk.init(...)` per-test. A
 
 - **uvicorn** — ASGI server (the worker is an `AsgiFastStream` app)
 - **FastStream[rabbit]** — RabbitMQ consumer/producer via `aio-pika`
-- **lite-bootstrap[faststream-logging,faststream-sentry]** — composes Sentry + structlog behind one `FastStreamConfig` object. Prometheus, OpenTelemetry, and Pyroscope extras intentionally omitted: Croupier runs on branch computers (NAT'd edge hosts) where pull-based scraping is impractical and there are no downstream hops to stitch into traces. Continuous profiling (Pyroscope) is tracked as future work in [#46](https://github.com/PaketMutfak/croupier/issues/46).
+- **lite-bootstrap[faststream-logging,faststream-sentry]** — composes Sentry + structlog behind one `FastStreamConfig` object. Prometheus, OpenTelemetry, and Pyroscope extras intentionally omitted: Croupier runs on branch computers (NAT'd edge hosts) where pull-based scraping is impractical and there are no downstream hops to stitch into traces. Continuous profiling (Pyroscope) was considered and declined in [#46](https://github.com/PaketMutfak/croupier/issues/46): the service is I/O-bound on the printer socket, so profiles add little.
 - **sentry-sdk** — error tracking (transitively via `lite-bootstrap`)
 - **python-escpos** — ESC/POS printer protocol
 - **pydantic** — Settings and Message models

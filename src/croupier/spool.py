@@ -55,6 +55,20 @@ def _is_retryable(status: int | None) -> bool:
     return not (delivered or status in _PERMANENT_REJECTIONS)
 
 
+def _fsync_directory(path: Path) -> None:
+    """Flush ``path``'s entries, so a rename or mkdir inside it survives a power cut.
+
+    Windows cannot open a directory, and NTFS journals these operations.
+    """
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _is_client_report(envelope: Envelope) -> bool:
     return bool(envelope.items) and all(
         item.type == "client_report" for item in envelope.items
@@ -77,6 +91,9 @@ class SpoolTransport(HttpTransport):
         self._dir = self.spool_dir / dsn_hash
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
+            # Persist every level ``mkdir`` may have just created.
+            for created in (self._dir, *self._dir.parents[:2]):
+                _fsync_directory(created.parent)
             for leftover in self._dir.glob(f"*{_TEMP_SUFFIX}"):
                 try:
                     leftover.unlink(missing_ok=True)
@@ -234,15 +251,7 @@ class SpoolTransport(HttpTransport):
         return final
 
     def _fsync_dir(self) -> None:
-        # The rename is only durable once the directory entry is flushed.
-        # Windows cannot open a directory, and NTFS journals the rename.
-        if os.name == "nt":
-            return
-        fd = os.open(self._dir, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        _fsync_directory(self._dir)
 
     def _evict(self) -> None:
         files = sorted(self._dir.glob(f"*{_SUFFIX}"))

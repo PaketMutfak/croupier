@@ -32,7 +32,7 @@ Croupier only consumes. The subscriber binds with `declare=False` and Croupier n
 
 A failed Receipt printing must reach the dead-letter queue. Errors propagate out of the handler and the subscriber uses `AckPolicy.REJECT_ON_ERROR` (reject, no requeue), so the queue's dead-letter arguments apply.
 
-**Reason:** the dead-letter arguments live on the producer-owned queue, and the producing side consumes and alerts on the DLQ; swallowing the error or requeueing in Croupier would hide failed receipts from that path.
+**Reason:** the dead-letter arguments live on the producer-owned queue, and the producing side consumes and alerts on the DLQ; swallowing the error or requeuing in Croupier would hide failed receipts from that path.
 
 **Consequence:** Croupier must not swallow errors or requeue.
 

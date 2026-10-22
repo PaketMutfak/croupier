@@ -7,8 +7,9 @@ sending it and deletes the file only once Sentry has answered definitively.
 Leftovers are replayed at startup and periodically while the process runs.
 
 Depends on private ``sentry-sdk`` internals: ``_worker``, ``_send_envelope``,
-``_flush_client_reports`` and ``_request``. ``tests/test_spool.py`` fails when a
-``sentry-sdk`` upgrade changes them. See ``docs/adr/0002``.
+``_flush_client_reports``, ``_check_disabled`` and ``_request``.
+``tests/test_spool.py`` fails when a ``sentry-sdk`` upgrade changes them. See
+``docs/adr/0002``.
 """
 
 import hashlib
@@ -77,7 +78,12 @@ class SpoolTransport(HttpTransport):
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             for leftover in self._dir.glob(f"*{_TEMP_SUFFIX}"):
-                leftover.unlink(missing_ok=True)
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    # Locked by antivirus: one stale file must not disable
+                    # the spool; the next start retries it.
+                    logger.warning("Cannot delete %s", leftover, exc_info=True)
             prefixes = (
                 path.name.split("-", 1)[0] for path in self._dir.glob(f"*{_SUFFIX}")
             )
@@ -187,11 +193,18 @@ class SpoolTransport(HttpTransport):
 
     def _deliver(self, path: Path, envelope: Envelope) -> None:
         self._last_status = None
+        # ``_send_envelope`` silently drops items in a rate-limited category, so
+        # a 2xx would only confirm the reduced envelope. Keep the file; once
+        # the limit lapses the replay sends the rest (Sentry dedups the items
+        # that already went through).
+        partial = any(
+            self._check_disabled(item.data_category) for item in envelope.items
+        )
         # Raises on a dead link, which leaves the file in place.
         self._send_envelope(envelope)
         # A crash between a successful send and this delete replays a duplicate
         # after restart; Sentry dedups by event ID, so that is accepted.
-        if not _is_retryable(self._last_status):
+        if not partial and not _is_retryable(self._last_status):
             path.unlink(missing_ok=True)
 
     def _write(self, envelope: Envelope) -> Path:

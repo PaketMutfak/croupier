@@ -1,6 +1,10 @@
+import hashlib
 import subprocess  # noqa: S404
 import sys
 import threading
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -220,6 +224,44 @@ class TestReplay:
 
         assert network.requests > before
         assert _spooled(spool_dir) == []
+
+    def test_envelope_with_rate_limited_items_is_kept(
+        self, start: Callable[..., SpoolTransport], spool_dir: Path
+    ) -> None:
+        transport = start()
+        transport._disabled_until["attachment"] = datetime.now(UTC) + timedelta(hours=1)
+        envelope = Envelope()
+        envelope.add_event({"message": "boom"})
+        envelope.add_item(Item(PayloadRef(bytes=b"log"), type="attachment"))
+
+        transport.capture_envelope(envelope)
+        transport.flush(timeout=5)
+
+        assert len(_spooled(spool_dir)) == 1
+
+    def test_locked_temp_file_does_not_disable_the_spool(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        dsn_hash = hashlib.sha256(DSN.encode()).hexdigest()[:12]
+        stale = spool_dir / dsn_hash / "1-x.tmp"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"partial")
+        original = Path.unlink
+
+        def locked(self: Path, *, missing_ok: bool = False) -> None:
+            if self.suffix == ".tmp":
+                msg = "locked by antivirus"
+                raise PermissionError(msg)
+            original(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", locked)
+        transport = start(dsn=DSN)
+        monkeypatch.setattr(Path, "unlink", original)
+
+        assert transport._spooling
 
     def test_corrupt_files_are_discarded(
         self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network

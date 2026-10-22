@@ -47,7 +47,7 @@ non-atomically.
   it as a duplicate. Sentry dedups by event ID; do not add machinery to prevent
   it. Eviction can likewise delete a file that is mid-send, which is harmless.
 - The transport depends on private `sentry-sdk` internals: `_worker`,
-  `_send_envelope`, `_flush_client_reports` and `_request`. A `sentry-sdk` bump
+  `_send_envelope`, `_flush_client_reports`, `_check_disabled` and `_request`. A `sentry-sdk` bump
   that changes them fails `tests/test_spool.py` (including the kill-and-recover
   and stress tests), so a Renovate PR will not go green silently.
 - Events replayed after a long outage arrive late but keep their original

@@ -15,6 +15,7 @@ dependencies = [
 
 
 [dependency-groups]
+dashboard = ["keep-the-why-dashboard==0.11.13"]
 dev = [
   "basedpyright==1.39.3",
   "parametrize-from-file==0.21.0",
@@ -140,6 +141,7 @@ exclude_dirs = ["tests"]
 
 [tool.typos.default.extend-words]
 cpy = "cpy"
+Paket = "Paket"
 
 
 [tool.pytest.ini_options]

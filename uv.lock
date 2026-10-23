@@ -163,6 +163,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+dashboard = [
+    { name = "keep-the-why-dashboard" },
+]
 dev = [
     { name = "basedpyright" },
     { name = "parametrize-from-file" },
@@ -184,6 +187,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+dashboard = [{ name = "keep-the-why-dashboard", specifier = "==0.11.13" }]
 dev = [
     { name = "basedpyright", specifier = "==1.39.3" },
     { name = "parametrize-from-file", specifier = "==0.21.0" },
@@ -306,6 +310,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "keep-the-why-dashboard"
+version = "0.11.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "keep-the-why-lint" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/d0/3831ed8a0262cd20e9463527be09eaf004029d1b74aa32a3002fef2eecc0/keep_the_why_dashboard-0.11.13.tar.gz", hash = "sha256:f2aa86ffae38207e86ee7dd313f734025badeb8f1fdb4cd1928b2515011de7f1", size = 215840, upload-time = "2026-10-20T07:58:06.378Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/64/1a26a5ceacea9eacea4188ab0547970292f8b294af1dc55083d75f9ec0b6/keep_the_why_dashboard-0.11.13-py3-none-any.whl", hash = "sha256:10075e4443a1bf9625e3eb384480563e8cd3a18d667272ceebcaec92fff2e916", size = 204080, upload-time = "2026-10-20T07:58:04.437Z" },
+]
+
+[[package]]
+name = "keep-the-why-lint"
+version = "0.20.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ca/56/3efcda791125cc8e70c377952cb4a2d14002538a50177412affafac526ec/keep_the_why_lint-0.20.3.0.tar.gz", hash = "sha256:297a86a64e3b7879dc8f3cb4a3f426d99c6fa269a38390d8a1a48b5993881490", size = 39038, upload-time = "2026-10-21T12:54:58.296Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/ae/34a727ebe76c18772283aa3740ce320ac4c26e3bbee6d27276ae522a4dd1/keep_the_why_lint-0.20.3.0-py3-none-any.whl", hash = "sha256:1f09e6ffbc81c821df019b5cceff4609554ca7a6a6462d4bbc09bf9685815a1f", size = 28878, upload-time = "2026-10-21T12:54:56.772Z" },
 ]
 
 [[package]]

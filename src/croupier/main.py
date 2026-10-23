@@ -212,7 +212,7 @@ def build_broker(
 
     The producing side owns the RabbitMQ topology (exchange, per-branch queues,
     DLX/DLQ, TTL), so the subscriber binds to the existing queue with ``declare=False``
-    and never declares anything; see ``docs/adr/0001``.
+    and never declares anything; see ``context/queue-topology.md``.
 
     Failure path: ``print_receipt`` errors propagate out of ``handle_message``.
     ``AckPolicy.REJECT_ON_ERROR`` then rejects the message without requeue, the

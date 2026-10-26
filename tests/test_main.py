@@ -13,6 +13,7 @@ from faststream.exceptions import IgnoredException
 from faststream.message import StreamMessage
 from faststream.rabbit import RabbitBroker
 from faststream.rabbit import TestRabbitBroker
+from pydantic import HttpUrl
 from sentry_sdk.client import NonRecordingClient
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
@@ -26,9 +27,11 @@ from croupier.main import build_broker
 from croupier.main import create_app
 from croupier.main import disable_console_quick_edit
 from croupier.main import restore_console_mode
+from croupier.spool import SpoolTransport
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from sentry_sdk.envelope import Envelope
 
@@ -354,7 +357,7 @@ class TestBrokerMiddlewareWiring:
 
     def test_registered_with_dsn(self, settings: Settings) -> None:
         with_dsn = settings.model_copy(
-            update={"sentry_dsn": "https://public@example.com/1"}
+            update={"sentry_dsn": HttpUrl("https://public@example.com/1")}
         )
         assert self._has_sentry(build_broker(with_dsn))
 
@@ -386,6 +389,23 @@ class TestCreateApp:
         app = create_app(settings)
         assert isinstance(app, AsgiFastStream)
 
+    def test_create_app_spools_sentry_events_to_disk(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        spool_dir = tmp_path / "spool"
+        with_dsn = settings.model_copy(
+            update={"sentry_dsn": HttpUrl("https://public@example.com/1")}
+        )
+
+        create_app(with_dsn, spool_dir=spool_dir)
+
+        transport = sentry_sdk.get_client().transport
+        assert isinstance(transport, SpoolTransport)
+        try:
+            assert spool_dir.is_dir()
+        finally:
+            transport.kill()
+
 
 class TestDlqPropagationThroughMiddleware:
     """SentryMiddleware must re-raise unhandled exceptions.
@@ -403,7 +423,7 @@ class TestDlqPropagationThroughMiddleware:
         recording_transport: _RecordingTransport,
     ) -> None:
         with_dsn = settings.model_copy(
-            update={"sentry_dsn": "https://public@example.com/1"}
+            update={"sentry_dsn": HttpUrl("https://public@example.com/1")}
         )
         printer = Dummy()
         with patch.object(printer, "_raw", side_effect=OSError("printer offline")):

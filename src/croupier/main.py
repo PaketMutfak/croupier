@@ -25,13 +25,16 @@ from croupier.printing import Message
 from croupier.printing import PrinterFactory
 from croupier.printing import connect_network
 from croupier.printing import print_receipt
+from croupier.settings import DEFAULT_SPOOL_DIR
 from croupier.settings import Settings
 from croupier.settings import load_settings
+from croupier.spool import make_spool_transport
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
     from collections.abc import Callable
     from collections.abc import Iterator
+    from pathlib import Path
 
     from faststream.message import StreamMessage
 
@@ -237,6 +240,7 @@ def build_broker(
 def create_app(
     settings: Settings | None = None,
     connect: PrinterFactory = connect_network,
+    spool_dir: Path = DEFAULT_SPOOL_DIR,
 ) -> AsgiFastStream:
     """ASGI app factory that wires Sentry and structlog through lite-bootstrap.
 
@@ -263,6 +267,9 @@ def create_app(
         # Process-wide Sentry tags. lite-bootstrap calls sentry_sdk.set_tags()
         # after init.
         sentry_tags={"queue_name": settings.queue_name},
+        # Branch computers lose ethernet and power; the spool keeps events on
+        # disk until Sentry confirms them and replays them after a restart.
+        sentry_additional_params={"transport": make_spool_transport(spool_dir)},
     )
     return FastStreamBootstrapper(config).bootstrap()
 

@@ -90,9 +90,12 @@ class SpoolTransport(HttpTransport):
         dsn_hash = hashlib.sha256(str(options["dsn"]).encode()).hexdigest()[:12]
         self._dir = self.spool_dir / dsn_hash
         try:
+            missing = [p for p in (self._dir, *self._dir.parents) if not p.exists()]
             self._dir.mkdir(parents=True, exist_ok=True)
-            # Persist every level ``mkdir`` may have just created.
-            for created in (self._dir, *self._dir.parents[:2]):
+            # Persist only the levels ``mkdir`` created: a pre-existing
+            # ancestor may be search-only (``/home`` at 0711), and opening it
+            # to fsync would fail and disable the spool for no gain.
+            for created in missing:
                 _fsync_directory(created.parent)
             for leftover in self._dir.glob(f"*{_TEMP_SUFFIX}"):
                 try:

@@ -457,6 +457,23 @@ class TestDegradation:
 
         assert network.requests == 1
 
+    def test_only_parents_of_created_directories_are_fsynced(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        synced: list[Path] = []
+        monkeypatch.setattr("croupier.spool._fsync_directory", synced.append)
+
+        transport = start()
+
+        # ``tmp_path`` already existed: its parent (which may be search-only)
+        # is never opened.
+        assert synced == [spool_dir, tmp_path]
+        assert transport._spooling
+
     def test_write_failure_falls_back_to_a_plain_send(
         self,
         start: Callable[..., SpoolTransport],

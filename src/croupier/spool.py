@@ -26,6 +26,7 @@ from typing import ClassVar
 
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import HttpTransport
+from sentry_sdk.utils import Dsn
 from sentry_sdk.utils import capture_internal_exceptions
 
 if TYPE_CHECKING:
@@ -68,7 +69,9 @@ def _is_retryable(status: int | None) -> bool:
 def _fsync_directory(path: Path) -> None:
     """Flush ``path``'s entries, so a rename or mkdir inside it survives a power cut.
 
-    Windows cannot open a directory, and NTFS journals these operations.
+    Windows cannot open a directory, and NTFS commits a rename lazily: a power
+    cut can lose it and leave only the fsynced ``.tmp`` file, which startup
+    recovers (``_recover_temp``).
     """
     if os.name == "nt":
         return
@@ -77,6 +80,46 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def project_spool_dir(spool_dir: Path, dsn: str) -> Path:
+    """The subdirectory of ``spool_dir`` for the Sentry project ``dsn`` points at.
+
+    Keyed by the project's endpoint, not the full DSN: rotating the client key
+    keeps the backlog, which is then sent with the new key to the same project.
+    Instances pointed at different projects never replay each other's events.
+    """
+    parsed = Dsn(dsn)
+    project = f"{parsed.scheme}://{parsed.netloc}{parsed.path}{parsed.project_id}"
+    return spool_dir / hashlib.sha256(project.encode()).hexdigest()[:12]
+
+
+def _recover_temp(path: Path) -> None:
+    """Promote a complete leftover ``.tmp`` file, or delete a partial one.
+
+    The temp file is fsynced before its rename, so a leftover that parses
+    is a whole envelope whose rename was lost (Windows) or never ran. A
+    crash before that fsync leaves a partial file, which is deleted.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        # Locked by antivirus: one stale file must not disable the spool;
+        # the next start retries it.
+        logger.warning("Cannot read %s", path, exc_info=True)
+        return
+    try:
+        complete = bool(Envelope.deserialize_from(io.BytesIO(raw)).items)
+    except Exception:  # noqa: BLE001
+        complete = False
+    try:
+        if complete:
+            # Same name, so it keeps its place in capture order.
+            path.replace(path.with_suffix(_SUFFIX))
+        else:
+            path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Cannot recover %s", path, exc_info=True)
 
 
 def _is_client_report(envelope: Envelope) -> bool:
@@ -105,8 +148,7 @@ class SpoolTransport(HttpTransport):
         # Losses the SDK records while a spooled envelope is being sent; they
         # are kept per thread so captures on other threads report as usual.
         self._held_losses = threading.local()
-        dsn_hash = hashlib.sha256(str(options["dsn"]).encode()).hexdigest()[:12]
-        self._dir = self.spool_dir / dsn_hash
+        self._dir = project_spool_dir(self.spool_dir, str(options["dsn"]))
         try:
             missing = [p for p in (self._dir, *self._dir.parents) if not p.exists()]
             # Envelopes carry exception payloads and tags: keep every level
@@ -120,12 +162,7 @@ class SpoolTransport(HttpTransport):
             for created in missing:
                 _fsync_directory(created.parent)
             for leftover in self._dir.glob(f"*{_TEMP_SUFFIX}"):
-                try:
-                    leftover.unlink(missing_ok=True)
-                except OSError:
-                    # Locked by antivirus: one stale file must not disable
-                    # the spool; the next start retries it.
-                    logger.warning("Cannot delete %s", leftover, exc_info=True)
+                _recover_temp(leftover)
             prefixes = (
                 path.name.split("-", 1)[0] for path in self._dir.glob(f"*{_SUFFIX}")
             )
@@ -401,7 +438,7 @@ def make_spool_transport(
 ) -> type[SpoolTransport]:
     """Build a transport class for ``sentry_sdk.init(transport=...)``.
 
-    The spool lives in a per-DSN subdirectory of ``spool_dir`` so instances
+    The spool lives in a per-project subdirectory of ``spool_dir`` so instances
     pointed at different Sentry projects never replay each other's events.
     """
 

@@ -1,4 +1,3 @@
-import hashlib
 import stat
 import subprocess  # noqa: S404
 import sys
@@ -20,6 +19,7 @@ from sentry_sdk.transport import HttpTransport
 
 from croupier.spool import SpoolTransport
 from croupier.spool import make_spool_transport
+from croupier.spool import project_spool_dir
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 DSN = "https://public@example.com/1"
 OTHER_DSN = "https://public@example.com/2"
+ROTATED_DSN = "https://rotated@example.com/1"
 
 
 class _Response:
@@ -279,14 +280,40 @@ class TestReplay:
 
         assert len(_spooled(spool_dir)) == 1
 
+    def test_complete_temp_file_is_recovered_at_startup(
+        self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
+    ) -> None:
+        # A rename lost to a power cut leaves only the fsynced temp file.
+        envelope = Envelope()
+        envelope.add_event({"event_id": "a" * 32, "message": "lost rename"})
+        temp = project_spool_dir(spool_dir, DSN) / "1-x.tmp"
+        temp.parent.mkdir(parents=True)
+        temp.write_bytes(envelope.serialize())
+
+        start().flush(timeout=5)
+
+        assert network.requests == 1
+        assert list(temp.parent.iterdir()) == []
+
+    def test_partial_temp_file_is_discarded_at_startup(
+        self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
+    ) -> None:
+        temp = project_spool_dir(spool_dir, DSN) / "1-x.tmp"
+        temp.parent.mkdir(parents=True)
+        temp.write_bytes(b'{"event_id": "cut short by a power')
+
+        start().flush(timeout=5)
+
+        assert network.requests == 0
+        assert list(temp.parent.iterdir()) == []
+
     def test_locked_temp_file_does_not_disable_the_spool(
         self,
         start: Callable[..., SpoolTransport],
         spool_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        dsn_hash = hashlib.sha256(DSN.encode()).hexdigest()[:12]
-        stale = spool_dir / dsn_hash / "1-x.tmp"
+        stale = project_spool_dir(spool_dir, DSN) / "1-x.tmp"
         stale.parent.mkdir(parents=True)
         stale.write_bytes(b"partial")
         original = Path.unlink
@@ -476,6 +503,17 @@ class TestBounds:
         assert stat.S_IMODE(spool_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE(envelope.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(envelope.stat().st_mode) == 0o600
+
+    def test_rotated_key_keeps_the_backlog(
+        self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
+    ) -> None:
+        network.status = None
+        _capture(start(dsn=DSN))
+        network.status = 200
+
+        start(dsn=ROTATED_DSN)
+
+        assert _spooled(spool_dir) == []
 
     def test_each_dsn_gets_its_own_spool(
         self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network

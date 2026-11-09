@@ -38,6 +38,10 @@ non-atomically.
   and a file that cannot be read (for example locked by antivirus) is kept
   rather than deleted. Filenames stay in capture order even if the clock jumps
   back after a power loss.
+- On POSIX the directory entry is fsynced after the rename. Windows cannot do
+  that and NTFS commits a rename lazily, so a power cut can leave only the
+  fsynced `.tmp` file; startup promotes a `.tmp` that parses as an envelope and
+  deletes one that does not.
 - The spool holds at most 500 files; the oldest file not being sent is evicted
   first and reported to Sentry as lost (`queue_overflow`). Corrupt files and
   client-report envelopes are discarded or never spooled.

@@ -414,6 +414,30 @@ class TestBounds:
 
         assert sending in _spooled(spool_dir)
 
+    def test_eviction_claims_the_file_it_drops(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        network.status = None
+        transport = start(max_files=1)
+        _capture(transport, "event-0")
+        (oldest,) = _spooled(spool_dir)
+        claimed_while_dropped: list[bool] = []
+        original = SpoolTransport._drop_evicted
+
+        def spy(self: SpoolTransport, path: Path) -> None:
+            claimed_while_dropped.append(path in self._in_flight)
+            original(self, path)
+
+        monkeypatch.setattr(SpoolTransport, "_drop_evicted", spy)
+        _capture(transport, "event-1")
+
+        assert claimed_while_dropped == [True]
+        assert oldest not in transport._in_flight
+
     def test_eviction_failure_still_delivers_the_new_event(
         self,
         start: Callable[..., SpoolTransport],
@@ -617,6 +641,41 @@ class TestDegradation:
         _capture(transport)
 
         assert network.requests == 1
+        assert _spooled(spool_dir) == []
+
+    def test_failed_write_cleanup_releases_the_claim(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def unsupported(_path: Path) -> None:
+            msg = "directory fsync not supported"
+            raise OSError(msg)
+
+        original = Path.unlink
+
+        def locked(self: Path, *, missing_ok: bool = False) -> None:
+            if self.suffix == ".envelope":
+                msg = "locked by antivirus"
+                raise PermissionError(msg)
+            original(self, missing_ok=missing_ok)
+
+        network.status = None
+        transport = start()
+        monkeypatch.setattr("croupier.spool._fsync_directory", unsupported)
+        monkeypatch.setattr(Path, "unlink", locked)
+        _capture(transport)
+        monkeypatch.setattr(Path, "unlink", original)
+
+        (left_behind,) = _spooled(spool_dir)
+        assert left_behind not in transport._in_flight
+
+        network.status = 200
+        transport.replay()
+        transport.flush(timeout=5)
+
         assert _spooled(spool_dir) == []
 
     def test_unreadable_file_is_kept_not_deleted(

@@ -12,6 +12,7 @@ Depends on private ``sentry-sdk`` internals: ``_worker``, ``_send_envelope``,
 ``docs/adr/0002``.
 """
 
+import contextlib
 import hashlib
 import io
 import logging
@@ -96,6 +97,7 @@ class SpoolTransport(HttpTransport):
         # deleted (locked by antivirus, read-only): replays retry the delete
         # and never send them again.
         self._answered: set[Path] = set()
+        self._evict_lock = threading.Lock()
         self._lock = threading.Lock()
         self._last_status: int | None = None
         self._last_ns = 0
@@ -321,8 +323,12 @@ class SpoolTransport(HttpTransport):
         except OSError:
             # The caller falls back to an in-memory send, so a file that was
             # already renamed must go too, or the replay would send it again.
-            temp.unlink(missing_ok=True)
-            final.unlink(missing_ok=True)
+            # A cleanup failure must neither hide the original error nor keep
+            # the claim: a file left behind is then replayed, a duplicate
+            # Sentry dedups, instead of being skipped until a restart.
+            for leftover in (temp, final):
+                with contextlib.suppress(OSError):
+                    leftover.unlink(missing_ok=True)
             self._release(final)
             raise
         return final
@@ -331,23 +337,31 @@ class SpoolTransport(HttpTransport):
         _fsync_directory(self._dir)
 
     def _evict(self) -> None:
-        files = sorted(self._dir.glob(f"*{_SUFFIX}"))
-        excess = len(files) - self.max_files
-        if excess <= 0:
-            return
-        with self._lock:
-            # A file being sent is skipped: whether it is lost depends on that
-            # send, so evicting it would leave the loss unreported or report a
-            # delivered event as lost. The cap is soft by at most the worker's
-            # queue size.
-            busy = set(self._in_flight)
-            answered = set(self._answered)
-        for stale in [path for path in files if path not in busy][:excess]:
-            if stale in answered:
-                # Already accepted or rejected by Sentry; nothing is lost.
-                self._forget(stale)
-                continue
-            self._drop_evicted(stale)
+        # One eviction at a time, or concurrent captures would each count the
+        # same excess and evict twice as many files as needed.
+        with self._evict_lock:
+            files = sorted(self._dir.glob(f"*{_SUFFIX}"))
+            excess = len(files) - self.max_files
+            for stale in files:
+                if excess <= 0:
+                    return
+                # Claim before reading or deleting, so a replay cannot start
+                # sending the file meanwhile. A file already being sent is
+                # skipped: its send decides whether it is lost. The cap is
+                # soft by at most the worker's queue size.
+                if not self._claim(stale):
+                    continue
+                excess -= 1
+                try:
+                    with self._lock:
+                        answered = stale in self._answered
+                    if answered:
+                        # Already accepted or rejected by Sentry: nothing lost.
+                        self._forget(stale)
+                    else:
+                        self._drop_evicted(stale)
+                finally:
+                    self._release(stale)
 
     def _drop_evicted(self, path: Path) -> None:
         logger.warning("Spool full, evicting oldest envelope %s", path)

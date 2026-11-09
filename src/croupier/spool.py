@@ -30,6 +30,11 @@ from sentry_sdk.utils import capture_internal_exceptions
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from sentry_sdk._types import EventDataCategory
+    from sentry_sdk.envelope import Item
+
+type _Loss = tuple[str, EventDataCategory | None, Item | None, int]
+
 logger = logging.getLogger(__name__)
 
 _SUFFIX = ".envelope"
@@ -87,6 +92,9 @@ class SpoolTransport(HttpTransport):
         self._last_status: int | None = None
         self._last_ns = 0
         self._stopped = threading.Event()
+        # Losses the SDK records while a spooled envelope is being sent; they
+        # are kept per thread so captures on other threads report as usual.
+        self._held_losses = threading.local()
         dsn_hash = hashlib.sha256(str(options["dsn"]).encode()).hexdigest()[:12]
         self._dir = self.spool_dir / dsn_hash
         try:
@@ -179,6 +187,20 @@ class SpoolTransport(HttpTransport):
         self._stopped.set()
         super().kill()
 
+    def record_lost_event(
+        self,
+        reason: str,
+        data_category: EventDataCategory | None = None,
+        item: Item | None = None,
+        *,
+        quantity: int = 1,
+    ) -> None:
+        held: list[_Loss] | None = getattr(self._held_losses, "losses", None)
+        if held is None:
+            super().record_lost_event(reason, data_category, item, quantity=quantity)
+        else:
+            held.append((reason, data_category, item, quantity))
+
     def _request(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         response = super()._request(*args, **kwargs)
         self._last_status = response.status
@@ -220,12 +242,23 @@ class SpoolTransport(HttpTransport):
         partial = any(
             self._check_disabled(item.data_category) for item in envelope.items
         )
-        # Raises on a dead link, which leaves the file in place.
-        self._send_envelope(envelope)
+        # The SDK reports every failed attempt as a lost event, but a kept file
+        # is retried, so those losses are held back and reported only if the
+        # envelope is dropped. Otherwise each replay during an outage would
+        # count the same events as lost again in Sentry's client reports.
+        held: list[_Loss] = []
+        self._held_losses.losses = held
+        try:
+            # Raises on a dead link, which leaves the file in place.
+            self._send_envelope(envelope)
+        finally:
+            self._held_losses.losses = None
         # A crash between a successful send and this delete replays a duplicate
         # after restart; Sentry dedups by event ID, so that is accepted.
         if not partial and not _is_retryable(self._last_status):
             path.unlink(missing_ok=True)
+            for reason, data_category, item, quantity in held:
+                self.record_lost_event(reason, data_category, item, quantity=quantity)
 
     def _write(self, envelope: Envelope) -> Path:
         # Names must sort by capture order even if the wall clock jumps back
@@ -248,8 +281,11 @@ class SpoolTransport(HttpTransport):
             temp.replace(final)
             self._fsync_dir()
         except OSError:
-            self._release(final)
+            # The caller falls back to an in-memory send, so a file that was
+            # already renamed must go too, or the replay would send it again.
             temp.unlink(missing_ok=True)
+            final.unlink(missing_ok=True)
+            self._release(final)
             raise
         return final
 

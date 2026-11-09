@@ -102,6 +102,18 @@ def start(
     sentry_sdk.get_global_scope().set_client(NonRecordingClient())
 
 
+@pytest.fixture
+def lost(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Reasons the transport reports to Sentry's client reports as lost."""
+    reasons: list[str] = []
+
+    def record(_self: object, reason: str, *_args: object, **_kwargs: object) -> None:
+        reasons.append(reason)
+
+    monkeypatch.setattr(HttpTransport, "record_lost_event", record)
+    return reasons
+
+
 def _spooled(spool_dir: Path) -> list[Path]:
     return sorted(spool_dir.rglob("*.envelope"))
 
@@ -166,6 +178,33 @@ class TestSpooling:
         _capture(start())
 
         assert _spooled(spool_dir) == []
+
+    def test_kept_event_is_not_reported_as_lost(
+        self,
+        start: Callable[..., SpoolTransport],
+        network: _Network,
+        lost: list[str],
+    ) -> None:
+        network.status = None
+        transport = start()
+        _capture(transport)
+        transport.replay()
+        transport.flush(timeout=5)
+
+        assert network.requests >= 2
+        assert lost == []
+
+    def test_dropped_event_is_reported_as_lost(
+        self,
+        start: Callable[..., SpoolTransport],
+        network: _Network,
+        lost: list[str],
+    ) -> None:
+        network.status = 400
+
+        _capture(start())
+
+        assert lost == ["network_error"]
 
     def test_client_reports_are_not_spooled(
         self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
@@ -487,6 +526,25 @@ class TestDegradation:
 
         transport = start()
         monkeypatch.setattr("croupier.spool.os.fsync", disk_full)
+
+        _capture(transport)
+
+        assert network.requests == 1
+        assert _spooled(spool_dir) == []
+
+    def test_directory_fsync_failure_leaves_no_file_to_resend(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def unsupported(_path: Path) -> None:
+            msg = "directory fsync not supported"
+            raise OSError(msg)
+
+        transport = start()
+        monkeypatch.setattr("croupier.spool._fsync_directory", unsupported)
 
         _capture(transport)
 

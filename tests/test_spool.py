@@ -318,6 +318,36 @@ class TestReplay:
 
         assert _spooled(spool_dir) == []
 
+    def test_answered_envelope_that_cannot_be_deleted_is_not_resent(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original = Path.unlink
+
+        def locked(self: Path, *, missing_ok: bool = False) -> None:
+            if self.suffix == ".envelope":
+                msg = "locked by antivirus"
+                raise PermissionError(msg)
+            original(self, missing_ok=missing_ok)
+
+        transport = start()
+        monkeypatch.setattr(Path, "unlink", locked)
+        _capture(transport)
+        transport.replay()
+        transport.flush(timeout=5)
+
+        assert network.requests == 1
+        assert len(_spooled(spool_dir)) == 1
+
+        monkeypatch.setattr(Path, "unlink", original)
+        transport.replay()
+
+        assert network.requests == 1
+        assert _spooled(spool_dir) == []
+
     def test_corrupt_file_that_cannot_be_deleted_does_not_break_replay(
         self,
         start: Callable[..., SpoolTransport],

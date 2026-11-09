@@ -92,6 +92,10 @@ class SpoolTransport(HttpTransport):
     def __init__(self, options: dict[str, Any]) -> None:
         super().__init__(options)
         self._in_flight: set[Path] = set()
+        # Envelopes Sentry already answered for good whose file could not be
+        # deleted (locked by antivirus, read-only): replays retry the delete
+        # and never send them again.
+        self._answered: set[Path] = set()
         self._lock = threading.Lock()
         self._last_status: int | None = None
         self._last_ns = 0
@@ -159,7 +163,15 @@ class SpoolTransport(HttpTransport):
 
     def replay(self) -> None:
         """Re-submit spooled envelopes that are not already being sent."""
-        for path in sorted(self._dir.glob(f"*{_SUFFIX}")):
+        paths = sorted(self._dir.glob(f"*{_SUFFIX}"))
+        with self._lock:
+            # Forget files that are gone, evicted or deleted by hand.
+            self._answered.intersection_update(paths)
+            answered = set(self._answered)
+        for path in paths:
+            if path in answered:
+                self._forget(path)
+                continue
             if self._worker.full():
                 return
             if not self._claim(path):
@@ -261,12 +273,25 @@ class SpoolTransport(HttpTransport):
             self._send_envelope(envelope)
         finally:
             self._held_losses.losses = None
-        # A crash between a successful send and this delete replays a duplicate
-        # after restart; Sentry dedups by event ID, so that is accepted.
+        # A crash between a successful send and this delete, or a restart while
+        # the file is still locked, replays a duplicate once; Sentry dedups by
+        # event ID, so that is accepted.
         if not partial and not _is_retryable(self._last_status):
-            path.unlink(missing_ok=True)
             for reason, data_category, item, quantity in held:
                 self.record_lost_event(reason, data_category, item, quantity=quantity)
+            self._forget(path)
+
+    def _forget(self, path: Path) -> None:
+        """Delete an envelope Sentry has answered for good."""
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Cannot delete answered envelope %s", path, exc_info=True)
+            with self._lock:
+                self._answered.add(path)
+            return
+        with self._lock:
+            self._answered.discard(path)
 
     def _write(self, envelope: Envelope) -> Path:
         # Names must sort by capture order even if the wall clock jumps back

@@ -44,3 +44,19 @@ Only the `faststream-logging` and `faststream-sentry` extras of lite-bootstrap a
 **Reason:** Croupier runs on branch computers, which are NAT'd edge hosts where pull-based scraping is impractical, and it has no downstream hops to stitch into traces.
 
 **Rejected alternative:** Prometheus metrics and OpenTelemetry tracing, for the reasons above. Continuous profiling with Pyroscope is not rejected, only deferred; it is tracked as future work in issue #46.
+
+## Spool losses are held back until the envelope is dropped
+
+**Id:** cefe77f1-a546-4295-b418-894dbb02b35f
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** code review of PR #125, 2026-11-09; `_send_request` and `_handle_response` in `sentry-sdk` 2.73.0; comment in `_deliver` in `src/croupier/spool.py`
+**Verification:** corroborated — `test_kept_event_is_not_reported_as_lost` and `test_dropped_event_is_reported_as_lost` in `tests/test_spool.py`
+**Revisit when:** `sentry-sdk` gives transient and permanent send failures different loss reasons, or the spool (`docs/adr/0002-sentry-events-spool-to-disk.md`) is removed
+
+While `SpoolTransport` sends a spooled envelope, every lost event `sentry-sdk` records is held on that thread. The held losses are reported only if the file is then deleted as permanently rejected (400, 401, 403, 413); if the file is kept for a retry, they are discarded.
+
+**Reason:** `sentry-sdk` records each item as lost on every failed attempt. The spool retries a kept file every 60 s, so without this an outage would count the same events as lost again on each replay, and they would then also arrive as accepted. Sentry's dropped-event stats, the place to check that the spool works, would be inflated by the number of retries.
+
+**Rejected alternative:** ignoring the losses by reason name (`network_error`, `ratelimit_backoff`). `sentry-sdk` gives a permanent 400/401/403 the same `network_error` reason as a retried 5xx, so a filter by reason would also hide envelopes that are really lost. Whether the file is kept is the actual record of whether the event is lost.

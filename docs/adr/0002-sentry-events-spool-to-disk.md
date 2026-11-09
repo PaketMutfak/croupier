@@ -38,14 +38,17 @@ non-atomically.
   and a file that cannot be read (for example locked by antivirus) is kept
   rather than deleted. Filenames stay in capture order even if the clock jumps
   back after a power loss.
-- The spool holds at most 500 files; the oldest are evicted first. Corrupt files
-  and client-report envelopes are discarded or never spooled.
+- The spool holds at most 500 files; the oldest file not being sent is evicted
+  first and reported to Sentry as lost (`queue_overflow`). Corrupt files and
+  client-report envelopes are discarded or never spooled.
 
 ## Consequences
 
 - A crash after Sentry accepted an event but before the file is deleted replays
   it as a duplicate. Sentry dedups by event ID; do not add machinery to prevent
-  it. Eviction can likewise delete a file that is mid-send, which is harmless.
+  it. Eviction skips files that are being sent, because their send decides
+  whether they are lost, so the cap can be exceeded by up to the worker's queue
+  size.
 - The transport depends on private `sentry-sdk` internals: `_worker`,
   `_send_envelope`, `_flush_client_reports`, `_check_disabled` and `_request`. A `sentry-sdk` bump
   that changes them fails `tests/test_spool.py` (including the kill-and-recover

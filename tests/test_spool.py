@@ -390,6 +390,30 @@ class TestBounds:
         assert not any(b"event-0" in content for content in contents)
         assert any(b"event-2" in content for content in contents)
 
+    def test_evicted_event_is_reported_as_lost(
+        self, start: Callable[..., SpoolTransport], network: _Network, lost: list[str]
+    ) -> None:
+        network.status = None
+        transport = start(max_files=2)
+
+        for index in range(3):
+            _capture(transport, f"event-{index}")
+
+        assert lost == ["queue_overflow"]
+
+    def test_event_being_sent_is_not_evicted(
+        self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
+    ) -> None:
+        network.status = None
+        transport = start(max_files=1)
+        _capture(transport, "event-0")
+        (sending,) = _spooled(spool_dir)
+        assert transport._claim(sending)
+
+        _capture(transport, "event-1")
+
+        assert sending in _spooled(spool_dir)
+
     def test_eviction_failure_still_delivers_the_new_event(
         self,
         start: Callable[..., SpoolTransport],

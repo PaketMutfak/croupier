@@ -332,16 +332,46 @@ class SpoolTransport(HttpTransport):
 
     def _evict(self) -> None:
         files = sorted(self._dir.glob(f"*{_SUFFIX}"))
-        # May evict a file that is mid-send: the send still completes and the
-        # later delete is a no-op.
-        for stale in files[: max(0, len(files) - self.max_files)]:
-            logger.warning("Spool full, evicting oldest envelope %s", stale)
-            try:
-                stale.unlink(missing_ok=True)
-            except OSError:
-                # Locked or read-only: the cap is soft, and the capture that
-                # triggered this must still be submitted.
-                logger.warning("Cannot evict %s", stale, exc_info=True)
+        excess = len(files) - self.max_files
+        if excess <= 0:
+            return
+        with self._lock:
+            # A file being sent is skipped: whether it is lost depends on that
+            # send, so evicting it would leave the loss unreported or report a
+            # delivered event as lost. The cap is soft by at most the worker's
+            # queue size.
+            busy = set(self._in_flight)
+            answered = set(self._answered)
+        for stale in [path for path in files if path not in busy][:excess]:
+            if stale in answered:
+                # Already accepted or rejected by Sentry; nothing is lost.
+                self._forget(stale)
+                continue
+            self._drop_evicted(stale)
+
+    def _drop_evicted(self, path: Path) -> None:
+        logger.warning("Spool full, evicting oldest envelope %s", path)
+        try:
+            raw: bytes | None = path.read_bytes()
+        except OSError:
+            raw = None
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # Locked or read-only: the cap is soft, and the capture that
+            # triggered this must still be submitted.
+            logger.warning("Cannot evict %s", path, exc_info=True)
+            return
+        if raw is None:
+            return
+        try:
+            envelope = Envelope.deserialize_from(io.BytesIO(raw))
+        except Exception:  # noqa: BLE001
+            # A truncated file holds no event that could still be delivered.
+            return
+        # Overflow is a real loss; report it so the client reports show it.
+        for item in envelope.items:
+            self.record_lost_event("queue_overflow", item=item)
 
     def _replay_forever(self) -> None:
         while not self._stopped.wait(self.replay_interval):

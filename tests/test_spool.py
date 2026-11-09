@@ -1,4 +1,5 @@
 import hashlib
+import stat
 import subprocess  # noqa: S404
 import sys
 import threading
@@ -384,6 +385,19 @@ class TestBounds:
 
         remaining = [path.read_bytes() for path in _spooled(spool_dir)]
         assert all(b"event-1" not in content for content in remaining)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_spool_is_private_to_the_service_account(
+        self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
+    ) -> None:
+        network.status = None
+
+        _capture(start())
+
+        (envelope,) = _spooled(spool_dir)
+        assert stat.S_IMODE(spool_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(envelope.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(envelope.stat().st_mode) == 0o600
 
     def test_each_dsn_gets_its_own_spool(
         self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network

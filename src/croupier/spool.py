@@ -42,6 +42,10 @@ _TEMP_SUFFIX = ".tmp"
 _HTTP_OK_MIN = 200
 _HTTP_OK_MAX = 299
 _PERMANENT_REJECTIONS = frozenset({400, 401, 403, 413})
+_PRIVATE_DIR_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
+# Windows ``os.open`` defaults to text mode, which would rewrite newlines.
+_O_BINARY = getattr(os, "O_BINARY", 0)
 DEFAULT_MAX_FILES = 500
 DEFAULT_REPLAY_INTERVAL = 60.0
 
@@ -99,7 +103,11 @@ class SpoolTransport(HttpTransport):
         self._dir = self.spool_dir / dsn_hash
         try:
             missing = [p for p in (self._dir, *self._dir.parents) if not p.exists()]
-            self._dir.mkdir(parents=True, exist_ok=True)
+            # Envelopes carry exception payloads and tags: keep every level
+            # created here private to the service account. ``mkdir(parents=True)``
+            # would apply ``mode`` to the last level only.
+            for created in reversed(missing):
+                created.mkdir(mode=_PRIVATE_DIR_MODE, exist_ok=True)
             # Persist only the levels ``mkdir`` created: a pre-existing
             # ancestor may be search-only (``/home`` at 0711), and opening it
             # to fsync would fail and disable the spool for no gain.
@@ -271,7 +279,12 @@ class SpoolTransport(HttpTransport):
         final = self._dir / f"{name}{_SUFFIX}"
         temp = self._dir / f"{name}{_TEMP_SUFFIX}"
         try:
-            with temp.open("wb") as handle:
+            fd = os.open(
+                temp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY,
+                _PRIVATE_FILE_MODE,
+            )
+            with open(fd, "wb") as handle:  # noqa: PTH123
                 handle.write(envelope.serialize())
                 handle.flush()
                 os.fsync(handle.fileno())

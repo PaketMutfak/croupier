@@ -114,8 +114,10 @@ def _recover_temp(path: Path) -> None:
         complete = False
     try:
         if complete:
-            # Same name, so it keeps its place in capture order.
+            # Same name, so it keeps its place in capture order. The new entry
+            # must survive a power cut like one made by ``_write``.
             path.replace(path.with_suffix(_SUFFIX))
+            _fsync_directory(path.parent)
         else:
             path.unlink(missing_ok=True)
     except OSError:

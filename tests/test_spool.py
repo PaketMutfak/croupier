@@ -295,6 +295,27 @@ class TestReplay:
         assert network.requests == 1
         assert list(temp.parent.iterdir()) == []
 
+    def test_recovered_temp_file_is_made_durable(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        network.status = None
+        envelope = Envelope()
+        envelope.add_event({"event_id": "b" * 32, "message": "lost rename"})
+        temp = project_spool_dir(spool_dir, DSN) / "1-x.tmp"
+        temp.parent.mkdir(parents=True)
+        temp.write_bytes(envelope.serialize())
+        synced: list[Path] = []
+        monkeypatch.setattr("croupier.spool._fsync_directory", synced.append)
+
+        start()
+
+        assert synced == [temp.parent]
+        assert _spooled(spool_dir) == [temp.with_suffix(".envelope")]
+
     def test_partial_temp_file_is_discarded_at_startup(
         self, start: Callable[..., SpoolTransport], spool_dir: Path, network: _Network
     ) -> None:

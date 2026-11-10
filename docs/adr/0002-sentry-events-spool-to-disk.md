@@ -61,3 +61,25 @@ non-atomically.
   timestamps.
 - Every event costs one small synchronous disk write on the capturing thread.
   Croupier's error volume is low.
+
+## Accepted limits
+
+The spool is best effort within these bounds. A finding that falls inside one
+of them is answered by pointing here, not with more machinery.
+
+- **Duplicates.** An envelope can reach Sentry more than once: after a crash
+  between a send and its delete, after a restart while an answered file is
+  still locked, when a write's cleanup fails, or when a partly rate-limited
+  envelope is replayed. Sentry dedups events by event ID.
+- **Soft cap.** Files being sent are never evicted, so the spool can exceed
+  500 files by up to the worker's queue size. A file that cannot be deleted
+  stays until a later attempt succeeds.
+- **Windows durability.** A directory cannot be fsynced on Windows. A rename
+  lost to a power cut is recovered at startup from the fsynced `.tmp` file;
+  nothing stronger is attempted.
+- **Client reports.** Lost-event counts are best effort: losses are reported
+  when an envelope is permanently rejected or evicted, and not for attempts
+  whose file is kept for a retry.
+- **Process-wide state.** Claims and the set of answered files live in memory;
+  two processes sharing one spool directory are not coordinated beyond what
+  Sentry's dedup absorbs.

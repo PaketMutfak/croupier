@@ -165,8 +165,12 @@ class SpoolTransport(HttpTransport):
                 _fsync_directory(created.parent)
             for leftover in self._dir.glob(f"*{_TEMP_SUFFIX}"):
                 _recover_temp(leftover)
+            # A ``.tmp`` that could not be recovered is promoted on a later
+            # start, so its name must also stay below every new capture's.
             prefixes = (
-                path.name.split("-", 1)[0] for path in self._dir.glob(f"*{_SUFFIX}")
+                path.name.split("-", 1)[0]
+                for suffix in (_SUFFIX, _TEMP_SUFFIX)
+                for path in self._dir.glob(f"*{suffix}")
             )
             self._last_ns = max((int(p) for p in prefixes if p.isdigit()), default=0)
         except OSError:

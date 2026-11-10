@@ -766,6 +766,40 @@ class TestDegradation:
         transport.flush(timeout=5)
         assert _spooled(spool_dir) == []
 
+    def test_new_events_sort_after_an_unrecovered_temp_file(
+        self,
+        start: Callable[..., SpoolTransport],
+        spool_dir: Path,
+        network: _Network,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        network.status = None
+        temp = (
+            project_spool_dir(spool_dir, DSN)
+            / f"{2_000_000_000_000_000_000:020d}-x.tmp"
+        )
+        temp.parent.mkdir(parents=True)
+        temp.write_bytes(b"complete, but locked by antivirus at startup")
+        original = Path.read_bytes
+
+        def locked(self: Path) -> bytes:
+            if self.suffix == ".tmp":
+                msg = "locked by antivirus"
+                raise PermissionError(msg)
+            return original(self)
+
+        monkeypatch.setattr(Path, "read_bytes", locked)
+        # The clock was reset by the power cut that left the temp file.
+        monkeypatch.setattr(
+            "croupier.spool.time",
+            SimpleNamespace(time_ns=lambda: 1_000_000_000_000_000_000),
+        )
+        transport = start()
+        _capture(transport)
+
+        (captured,) = _spooled(spool_dir)
+        assert captured.name > temp.name
+
     def test_clock_reset_does_not_make_new_events_look_oldest(
         self,
         start: Callable[..., SpoolTransport],

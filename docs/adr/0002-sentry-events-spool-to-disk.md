@@ -76,7 +76,9 @@ of them is answered by pointing here, not with more machinery.
   stays until a later attempt succeeds.
 - **Windows durability.** A directory cannot be fsynced on Windows. A rename
   lost to a power cut is recovered at startup from the fsynced `.tmp` file;
-  nothing stronger is attempted.
+  nothing stronger is attempted. That recovery runs only at startup: at
+  runtime `_write` has its own `.tmp` files in flight, and a sweep would race
+  them. A `.tmp` that antivirus locks during startup waits for the next start.
 - **Client reports.** Lost-event counts are best effort: losses are reported
   when an envelope is permanently rejected or evicted, and not for attempts
   whose file is kept for a retry.

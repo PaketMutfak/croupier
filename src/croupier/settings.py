@@ -8,6 +8,7 @@ from pydantic import ConfigDict
 from pydantic import HttpUrl
 
 DEFAULT_SETTINGS_PATH = Path.home() / ".croupier.json"
+DEFAULT_SPOOL_DIR = Path.home() / ".croupier-sentry-spool"
 
 
 class Settings(BaseModel):

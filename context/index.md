@@ -52,7 +52,7 @@
 
 ## O
 
-- [observability.md](observability.md) — Sentry noise control and which lite-bootstrap extras are left out
+- [observability.md](observability.md) — Sentry noise control, which lite-bootstrap extras are left out, and how the spool reports lost events
 
 ## P
 

@@ -151,6 +151,66 @@ class TestSubscriber:
         assert closed == [True]
 
 
+class TestSubscriberDuplicates:
+    async def test_same_correlation_id_prints_once(
+        self,
+        broker: RabbitBroker,
+        settings: Settings,
+        printer: Dummy,
+        sample_message: Message,
+    ) -> None:
+        async with TestRabbitBroker(broker) as br:
+            await br.publish(
+                sample_message, queue=settings.queue_name, correlation_id="req-1:st-1"
+            )
+            await br.publish(
+                sample_message, queue=settings.queue_name, correlation_id="req-1:st-1"
+            )
+
+        assert printer.output == sample_message.content
+
+    async def test_new_correlation_id_prints_again(
+        self,
+        broker: RabbitBroker,
+        settings: Settings,
+        printer: Dummy,
+        sample_message: Message,
+    ) -> None:
+        async with TestRabbitBroker(broker) as br:
+            await br.publish(
+                sample_message, queue=settings.queue_name, correlation_id="req-1:st-1"
+            )
+            await br.publish(
+                sample_message, queue=settings.queue_name, correlation_id="req-2:st-1"
+            )
+
+        assert printer.output == sample_message.content * 2
+
+    async def test_failed_print_is_not_recorded(
+        self,
+        settings: Settings,
+        sample_message: Message,
+    ) -> None:
+        printer = Dummy()
+        broker = build_broker(settings, connect=lambda _m: printer)
+
+        async with TestRabbitBroker(broker) as br:
+            with (
+                patch.object(printer, "_raw", side_effect=OSError("printer offline")),
+                pytest.raises(OSError, match="printer offline"),
+            ):
+                await br.publish(
+                    sample_message,
+                    queue=settings.queue_name,
+                    correlation_id="req-1:st-1",
+                )
+            await br.publish(
+                sample_message, queue=settings.queue_name, correlation_id="req-1:st-1"
+            )
+
+        assert printer.output == sample_message.content
+
+
 class TestSubscriberFailure:
     async def test_printer_error_reaches_the_broker_so_message_is_rejected(
         self,

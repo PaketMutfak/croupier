@@ -17,10 +17,14 @@ from faststream.asgi import AsgiFastStream
 from faststream.exceptions import IgnoredException
 from faststream.rabbit import RabbitBroker
 from faststream.rabbit import RabbitQueue
+
+# Runtime import: FastStream resolves handler annotations to inject the message.
+from faststream.rabbit.annotations import RabbitMessage  # noqa: TC002
 from lite_bootstrap import FastStreamBootstrapper
 from lite_bootstrap import FastStreamConfig
 from sentry_sdk.integrations.logging import ignore_logger
 
+from croupier.printed import PrintedReceipts
 from croupier.printing import Message
 from croupier.printing import PrinterFactory
 from croupier.printing import connect_network
@@ -207,6 +211,7 @@ class SentryMiddleware(BaseMiddleware[Any, bytes]):
 def build_broker(
     settings: Settings,
     connect: PrinterFactory = connect_network,
+    printed_receipts: PrintedReceipts | None = None,
 ) -> RabbitBroker:
     """Assemble the broker that consumes the receipt queue.
 
@@ -218,18 +223,37 @@ def build_broker(
     ``AckPolicy.REJECT_ON_ERROR`` then rejects the message without requeue, the
     queue's dead-letter arguments route it to ``receipt.dispatch.dlq``, and the
     producing side alerts on it. ``SentryMiddleware`` re-raises, so that still holds.
+
+    Duplicates: the ack goes out only after ``print_receipt`` returns, so a channel
+    drop in between makes RabbitMQ deliver the receipt again. A message whose
+    correlation id is in ``printed_receipts`` is acked without printing. Each
+    publish has its own correlation id, so a real reprint is never skipped.
     """
     broker = RabbitBroker(
         settings.queue_url.unicode_string(),
         middlewares=(SentryMiddleware,) if settings.sentry_dsn else (),
     )
 
+    printed = printed_receipts if printed_receipts is not None else PrintedReceipts()
+
     @broker.subscriber(
         queue=RabbitQueue(name=settings.queue_name, declare=False),
         ack_policy=AckPolicy.REJECT_ON_ERROR,
     )
-    async def handle_message(body: Message) -> None:
+    async def handle_message(body: Message, message: RabbitMessage) -> None:
+        correlation_id = message.correlation_id
+        if correlation_id and correlation_id in printed:
+            # The ack for the first print never reached RabbitMQ (e.g. the
+            # channel dropped), so the broker delivered it again. Ack it
+            # without printing a second copy; see context/queue-topology.md.
+            logger.warning(
+                "skipping receipt already printed (correlation_id=%s)",
+                correlation_id,
+            )
+            return
         await asyncio.to_thread(print_receipt, body, connect)
+        if correlation_id:
+            printed.add(correlation_id)
 
     return broker
 

@@ -49,3 +49,24 @@ A failed Receipt printing must reach the dead-letter queue. Errors propagate out
 `content` is the UTF-8 string form of the bytes. Producers send ASCII text plus ESC/POS control codes. Non-UTF-8 bytes cannot be serialised.
 
 **Rejected alternative:** Base64 or any other content encoding. It would change what goes through RabbitMQ and needs a coordinated producer change.
+
+## A receipt whose correlation id was already printed is acked, not printed again
+
+**Id:** 82a8d07d-b06a-4240-a00c-ab0b8f2c2e2b
+**Type:** decision
+**Status:** active
+**Evidence:** confirmed
+**Source:** issue #145 and maintainer decision, 2026-11-13
+**See:** queue-topology.md#failed-printing-is-rejected-never-swallowed-or-requeued — 5a65f37a-8d99-4df4-b9e1-50ad140ff0f4 — as of 2026-11-13
+**Revisit when:** a duplicate print follows a Croupier restart, the producing side reuses correlation ids, or the subscriber starts handling messages concurrently
+
+The ack goes out only after `print_receipt` returns, so a channel drop between the print and the ack makes RabbitMQ deliver the same receipt again. Order 13849 printed twice from one reprint this way (CROUPIER-4, `No active transport in channel`, on that branch's queue). Croupier now keeps the correlation ids of receipts it printed in memory for 24 hours, and a message with a known id is acked without printing. The id is recorded only after a successful print, so a failed print still dead-letters and is never marked as printed.
+
+**Reason:** every publish has its own correlation id (`<request id>:<station id>`, or the request id for the main printer), so a real reprint always carries a new one and is never skipped.
+
+**Rejected alternatives:**
+- A file in the home directory, which would survive a restart. Not chosen: in-memory is enough for redelivery after a reconnect inside one process; a restart between the print and the redelivery is left uncovered.
+- Skipping only messages with RabbitMQ's `redelivered` flag. Not chosen: skipping on every message with a known id also catches a producer publishing the same id twice.
+- A fixed cap on the number of ids instead of 24 hours. Not chosen; retention is by time.
+
+**Consequence:** the gap between the print and the record remains (a crash right after printing), and a second Croupier process on the same PC (CROUPIER-5) has its own memory, so it is not covered here.

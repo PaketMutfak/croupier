@@ -58,9 +58,9 @@ A failed Receipt printing must reach the dead-letter queue. Errors propagate out
 **Evidence:** confirmed
 **Source:** issue #145 and maintainer decision, 2026-11-13
 **See:** queue-topology.md#failed-printing-is-rejected-never-swallowed-or-requeued — 5a65f37a-8d99-4df4-b9e1-50ad140ff0f4 — as of 2026-11-13
-**Revisit when:** a duplicate print follows a Croupier restart, the producing side reuses correlation ids, or the subscriber starts handling messages concurrently
+**Revisit when:** a duplicate print follows a Croupier restart, the producing side reuses correlation ids or stops sending them (FastStream then fills in a fresh uuid per delivery, so a redelivery is not recognised), or the subscriber starts handling messages concurrently
 
-The ack goes out only after `print_receipt` returns, so a channel drop between the print and the ack makes RabbitMQ deliver the same receipt again. Order 13849 printed twice from one reprint this way (CROUPIER-4, `No active transport in channel`, on that branch's queue). Croupier now keeps the correlation ids of receipts it printed in memory for 24 hours, and a message with a known id is acked without printing. The id is recorded only after a successful print, so a failed print still dead-letters and is never marked as printed.
+The ack goes out only after `print_receipt` returns, so a channel drop between the print and the ack makes RabbitMQ deliver the same receipt again. Order 13849 printed twice from one reprint this way (CROUPIER-4, `No active transport in channel`, on that branch's queue). Croupier now keeps the correlation ids of receipts it printed in memory for 24 hours, and a message with a known id is acked without printing. The id is recorded only after a successful print, so a failed print still dead-letters and is never marked as printed. It is recorded in the worker thread that printed, so a handler cancelled mid-print (for example on a channel drop) still records the id once the print finishes.
 
 **Reason:** every publish has its own correlation id (`<request id>:<station id>`, or the request id for the main printer), so a real reprint always carries a new one and is never skipped.
 

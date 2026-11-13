@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,7 @@ DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
 class PrintedReceipts:
     """Correlation ids of receipts this process has already printed.
 
+    Thread-safe: ids are added from the worker thread that printed the receipt.
     In memory only: a restart forgets them. Ids older than ``retention_seconds``
     are dropped on every access, so the set stays bounded by receipt volume.
     """
@@ -25,15 +27,18 @@ class PrintedReceipts:
         self._clock = clock
         # Insertion order is print order, so the oldest ids are at the front.
         self._printed_at: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def __contains__(self, correlation_id: str) -> bool:
-        self._prune()
-        return correlation_id in self._printed_at
+        with self._lock:
+            self._prune()
+            return correlation_id in self._printed_at
 
     def add(self, correlation_id: str) -> None:
-        self._prune()
-        self._printed_at.pop(correlation_id, None)
-        self._printed_at[correlation_id] = self._clock()
+        with self._lock:
+            self._prune()
+            self._printed_at.pop(correlation_id, None)
+            self._printed_at[correlation_id] = self._clock()
 
     def _prune(self) -> None:
         cutoff = self._clock() - self._retention_seconds

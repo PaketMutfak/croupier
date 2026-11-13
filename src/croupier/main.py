@@ -4,6 +4,7 @@ import ctypes
 import logging
 import sys
 from contextlib import contextmanager
+from functools import partial
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import NoReturn
@@ -236,12 +237,6 @@ def build_broker(
 
     printed = printed_receipts if printed_receipts is not None else PrintedReceipts()
 
-    def print_and_record(body: Message, correlation_id: str) -> None:
-        print_receipt(body, connect)
-        # Recorded in the worker thread: if the awaiting handler is cancelled
-        # mid-print, the thread still finishes the print and the id is kept.
-        printed.add(correlation_id)
-
     @broker.subscriber(
         queue=RabbitQueue(name=settings.queue_name, declare=False),
         ack_policy=AckPolicy.REJECT_ON_ERROR,
@@ -250,7 +245,12 @@ def build_broker(
         # FastStream fills a missing correlation id with a fresh uuid, so it is
         # never empty here.
         correlation_id = message.correlation_id
-        if correlation_id in printed:
+        # print_once runs entirely in the worker thread, so a handler cancelled
+        # mid-print still records the id once the print finishes.
+        printed_now = await asyncio.to_thread(
+            printed.print_once, correlation_id, partial(print_receipt, body, connect)
+        )
+        if not printed_now:
             # The ack for the first print never reached RabbitMQ (e.g. the
             # channel dropped), so the broker delivered it again. Ack it
             # without printing a second copy; see context/queue-topology.md.
@@ -258,8 +258,6 @@ def build_broker(
                 "skipping receipt already printed (correlation_id=%s)",
                 correlation_id,
             )
-            return
-        await asyncio.to_thread(print_and_record, body, correlation_id)
 
     return broker
 
